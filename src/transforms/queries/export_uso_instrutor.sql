@@ -1,0 +1,27 @@
+SELECT
+  `Nome de usuário`,
+  `Nome`,
+  `Sobrenome`,
+  `ID definido da organização`,
+  `ID do Usuário`,
+  `Nome da função`,
+  `ID da função`,
+  `Ativo`,
+  `Nome da oferta de curso`,
+  `Código da oferta de curso`,
+  `ID da oferta de curso`,
+  `Número de Tópicos do Conteúdo Visitados`,
+  `Último Acesso ao Conteúdo da Oferta de Curso`,
+  `Número de atividades`,
+  `Número de Envios de Atividades com Comentários`,
+  `Número de Notas`,
+  `Número de Notas com Avaliações`,
+  `Última Modificação de uma Nota`,
+  `Número de Posts de Discussão`,
+  `Número de Posts de Discussão Criadas`,
+  `Data da última postagem de discussão`,
+  `Último Acesso à Oferta de Curso`,
+  `Número de logons no sistema`,
+  `Data do Último e-mail Enviado`
+FROM uso_do_instrutor
+ORDER BY `Nome da oferta de curso`, `Sobrenome`, `Nome`;

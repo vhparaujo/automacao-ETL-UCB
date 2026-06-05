@@ -1,0 +1,50 @@
+{
+  "_instrucoes": "Configure as transformações SQL. Cada item é executado em ordem após a carga dos dados.",
+  "_tipos": {
+    "view": "Cria/atualiza uma VIEW no MySQL (usada pelo PowerBI)",
+    "exportar_csv": "Executa a query e salva resultado como CSV em exports/",
+    "table": "Cria/recria uma tabela com o resultado da query"
+  },
+
+  "transformacoes": [
+    {
+      "nome": "export_users",
+      "arquivo": "src/transforms/queries/export_users.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/users.csv",
+      "descricao": "Exporta todos os usuários"
+    },
+    {
+      "nome": "export_unidades_organizacionais",
+      "arquivo": "src/transforms/queries/export_unidades_organizacionais.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/unidades_organizacionais.csv",
+      "descricao": "Exporta unidades organizacionais"
+    },
+    {
+      "nome": "export_objetos_nota",
+      "arquivo": "src/transforms/queries/export_objetos_nota.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/objetos_nota.csv",
+      "descricao": "Exporta objetos de nota"
+    },
+    {
+      "nome": "export_uso_instrutor",
+      "arquivo": "src/transforms/queries/export_uso_instrutor.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/uso_do_instrutor.csv",
+      "descricao": "Exporta relatório de uso do instrutor"
+    },
+    {
+      "nome": "exemplo_view",
+      "arquivo": "src/transforms/queries/exemplo.sql",
+      "ativo": false,
+      "tipo": "view",
+      "descricao": "Exemplo comentado — desativado"
+    }
+  ]
+}

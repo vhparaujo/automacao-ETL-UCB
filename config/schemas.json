@@ -1,0 +1,108 @@
+{
+  "_instrucoes": "Schemas fixos para tabelas conhecidas. O loader usa estes ao invés de auto-inferir. Chave = nome do CSV (sem extensão).",
+
+  "Users": {
+    "tabela": "users",
+    "colunas": {
+      "UserId":         "INT",
+      "UserName":       "VARCHAR(255)",
+      "OrgDefinedId":   "VARCHAR(100)",
+      "FirstName":      "VARCHAR(150)",
+      "MiddleName":     "VARCHAR(150)",
+      "LastName":       "VARCHAR(150)",
+      "IsActive":       "TINYINT(1)",
+      "Organization":   "VARCHAR(255)",
+      "ExternalEmail":  "VARCHAR(255)",
+      "SignupDate":     "DATETIME",
+      "FirstLoginDate": "DATETIME",
+      "Version":        "INT",
+      "OrgRoleId":      "INT",
+      "LastAccessed":   "DATETIME"
+    }
+  },
+
+  "OrganizationalUnits": {
+    "tabela": "organizationalunits",
+    "colunas": {
+      "OrgUnitId":      "INT",
+      "Organization":   "VARCHAR(255)",
+      "Type":           "VARCHAR(100)",
+      "Name":           "VARCHAR(255)",
+      "Code":           "VARCHAR(100)",
+      "StartDate":      "DATETIME",
+      "EndDate":        "DATETIME",
+      "IsActive":       "TINYINT(1)",
+      "CreatedDate":    "DATETIME",
+      "IsDeleted":      "TINYINT(1)",
+      "DeletedDate":    "DATETIME",
+      "RecycledDate":   "DATETIME",
+      "Version":        "INT",
+      "OrgUnitTypeId":  "INT"
+    }
+  },
+
+  "GradeObjects": {
+    "tabela": "gradeobjects",
+    "colunas": {
+      "GradeObjectId":              "INT",
+      "OrgUnitId":                  "INT",
+      "ParentGradeObjectId":        "INT",
+      "Name":                       "VARCHAR(255)",
+      "TypeName":                   "VARCHAR(100)",
+      "StartDate":                  "DATETIME",
+      "EndDate":                    "DATETIME",
+      "IsAutoPointed":              "TINYINT(1)",
+      "IsFormula":                  "TINYINT(1)",
+      "IsBonus":                    "TINYINT(1)",
+      "MaxPoints":                  "DECIMAL(10,2)",
+      "CanExceedMaxGrade":          "TINYINT(1)",
+      "ExcludeFromFinalGradeCalc":  "TINYINT(1)",
+      "GradeSchemeId":              "INT",
+      "Weight":                     "DECIMAL(10,4)",
+      "NumLowestGradesToDrop":      "INT",
+      "NumHighestGradesToDrop":     "INT",
+      "WeightDistributionType":     "VARCHAR(50)",
+      "CreatedDate":                "DATETIME",
+      "ToolName":                   "VARCHAR(100)",
+      "AssociatedToolItemId":       "INT",
+      "LastModified":               "DATETIME",
+      "ShortName":                  "VARCHAR(100)",
+      "GradeObjectTypeId":          "INT",
+      "SortOrder":                  "INT",
+      "IsDeleted":                  "TINYINT(1)",
+      "DeletedDate":                "DATETIME",
+      "DeletedByUserId":            "INT",
+      "ResultId":                   "INT"
+    }
+  },
+
+  "uso_do_instrutor": {
+    "tabela": "uso_do_instrutor",
+    "colunas": {
+      "Nome de usuário":                                "VARCHAR(255)",
+      "Nome":                                           "VARCHAR(150)",
+      "Sobrenome":                                      "VARCHAR(150)",
+      "ID definido da organização":                     "VARCHAR(100)",
+      "ID do Usuário":                                  "INT",
+      "Nome da função":                                 "VARCHAR(100)",
+      "ID da função":                                   "INT",
+      "Ativo":                                          "TINYINT(1)",
+      "Nome da oferta de curso":                        "VARCHAR(255)",
+      "Código da oferta de curso":                      "VARCHAR(100)",
+      "ID da oferta de curso":                          "INT",
+      "Número de Tópicos do Conteúdo Visitados":        "INT",
+      "Último Acesso ao Conteúdo da Oferta de Curso":   "DATETIME",
+      "Número de atividades":                           "INT",
+      "Número de Envios de Atividades com Comentários": "INT",
+      "Número de Notas":                                "INT",
+      "Número de Notas com Avaliações":                 "INT",
+      "Última Modificação de uma Nota":                 "DATETIME",
+      "Número de Posts de Discussão":                   "INT",
+      "Número de Posts de Discussão Criadas":           "INT",
+      "Data da última postagem de discussão":           "DATETIME",
+      "Último Acesso à Oferta de Curso":                "DATETIME",
+      "Número de logons no sistema":                    "INT",
+      "Data do Último e-mail Enviado":                  "DATETIME"
+    }
+  }
+}

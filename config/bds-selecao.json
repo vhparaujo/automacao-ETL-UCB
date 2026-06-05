@@ -1,0 +1,13 @@
+{
+  "_instrucoes": "Configure quais BDS são baixados automaticamente no pipeline agendado.",
+  "_nota_todos": "Se 'todos' for true, todos os 137 BDS são baixados automaticamente (ignora a lista abaixo).",
+  "_como_descobrir_nomes": "Execute: npm run cli → [6] Download sob demanda → [1] Listar BDS disponíveis",
+
+  "todos": false,
+
+  "automaticos": [
+    "Usuários",
+    "Unidades organizacionais",
+    "Objetos de nota"
+  ]
+}

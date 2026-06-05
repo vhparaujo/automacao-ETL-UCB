@@ -1,0 +1,21 @@
+{
+  "_instrucoes": "Configure o agendamento. Use cron syntax ou edite o campo 'cron'.",
+  "_exemplos_cron": {
+    "todo_dia_3h": "0 3 * * *",
+    "segunda_e_quinta_3h": "0 3 * * 1,4",
+    "toda_semana_domingo_2h": "0 2 * * 0"
+  },
+  "agendamento": {
+    "ativo": true,
+    "cron": "0 3 * * *",
+    "descricao": "Toda madrugada às 3h",
+    "fuso_horario": "America/Sao_Paulo"
+  },
+  "pipeline": {
+    "baixar_bds": true,
+    "baixar_ads": true,
+    "carregar_mysql": true,
+    "executar_transformacoes": true,
+    "exportar_csvs": true
+  }
+}

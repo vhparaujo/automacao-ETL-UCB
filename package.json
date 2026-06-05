@@ -1,0 +1,29 @@
+{
+  "name": "brightspace-etl-ucb",
+  "version": "1.0.0",
+  "description": "Automação ETL para dados do Brightspace (D2L) — UCB",
+  "main": "src/pipeline.js",
+  "scripts": {
+    "setup":     "node src/auth/oauth.js --setup",
+    "start":     "node src/pipeline.js --watch",
+    "pipeline":  "node src/pipeline.js",
+    "bds":       "node src/pipeline.js --apenas-bds",
+    "ads":       "node src/pipeline.js --apenas-ads",
+    "load":      "node src/pipeline.js --apenas-load",
+    "transform": "node src/pipeline.js --apenas-transform",
+    "cli":       "node src/cli.js",
+    "roles":     "node src/utils/listar-roles.js",
+    "test-auth": "node src/auth/oauth.js --test"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.5",
+    "csv-stringify": "^6.5.1",
+    "adm-zip": "^0.5.16",
+    "selfsigned": "^2.4.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

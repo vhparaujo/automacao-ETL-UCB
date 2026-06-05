@@ -1,0 +1,47 @@
+105     Super Administrador
+  116     Coordenador
+  136     Suporte
+  165     Núcelo de Soluções Didáticas
+  159     Relatório
+  148     ATENDE
+  174     Polos
+  134     Super Administrador 2
+  113     Designer de Curso
+  109     Professor
+  188     UCB_Tutoria
+  186     Professor - Emy
+  171     Monitor UCB
+  169     NIOP
+  147     Monitoria - UNILESTE
+  178     Monitoria - UNICATÓLICA
+  145     Professor Estágio - Unileste
+  114     Facilitador
+  120     Tutor (EAD)
+  110     Aluno
+  181     Monitoria UCB
+  175     Aluno Uniubec
+  189     Aluno Uniubec Cascata
+  184     Plataforma EMY - CASCATA
+  172     Aluno Esperançar
+  170     Aluno Monitor Unileste
+  167     Processo Seletivo
+  146     Degusta
+  111     Apenas Leitura
+  104     D2LMonitor
+  117     SIS Integration User
+  187     LTI Advantage User
+
+
+
+
+
+
+  ,
+  "Uso do aluno": {
+    "automatico": true,
+    "ativo": true,
+    "parentOrgUnitId": "6606",
+    "startDate": "2025-01-01T00:00:00.000Z",
+    "endDate": "2025-12-31T23:59:59.999Z",
+    "roles": ["110"]
+  }

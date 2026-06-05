@@ -1,0 +1,21 @@
+# Credenciais e tokens — NUNCA commitar
+.env
+.tokens.json
+
+# Dados gerados em runtime
+csvs/
+exports/
+logs/
+
+# Node
+node_modules/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Pasta de testes antigos — contém cookies de sessão hardcoded
+TesteAPI-D2L/
