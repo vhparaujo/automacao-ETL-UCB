@@ -115,7 +115,7 @@ async function download(opcoes = {}) {
   fs.mkdirSync(CSVS_DIR, { recursive: true });
   fs.mkdirSync(ZIPS_DIR, { recursive: true });
 
-  const token = await getAccessToken();
+  let token = await getAccessToken();
   const versao = await obterVersaoLP();
 
   const listaAPI = await requisicaoAPI(`${HOST}/d2l/api/lp/${versao}/datasets/bds`, token);
@@ -169,6 +169,8 @@ async function download(opcoes = {}) {
     }
 
     try {
+      // Renova o token a cada dataset para evitar 401 em sessões longas
+      token = await getAccessToken();
       const extracts = await requisicaoAPI(fullInfo.ExtractsLink, token);
       const latest = (extracts.Objects || [])[0];
 

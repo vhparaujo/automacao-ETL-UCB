@@ -2,7 +2,6 @@
 
 require('dotenv').config();
 const fs = require('node:fs');
-const path = require('node:path');
 const mysql = require('mysql2/promise');
 const { exportarQuery } = require('../exporter/csv-exporter');
 
@@ -51,9 +50,8 @@ async function run() {
           console.log(`✅ view atualizada`);
           executadas++;
         } else if (t.tipo === 'exportar_csv') {
-          await conn.query(sql);
           const saida = t.arquivo_saida || `exports/${t.nome}.csv`;
-          const linhas = await exportarQuery(conn, sql, saida);
+          const linhas = await exportarQuery(null, sql, saida);
           console.log(`✅ ${saida} (${linhas.toLocaleString('pt-BR')} linhas)`);
           executadas++;
         } else if (t.tipo === 'table') {

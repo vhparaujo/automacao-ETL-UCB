@@ -1,7 +1,7 @@
 {
   "_instrucoes": "Configure os relatórios ADS. 'automatico: true' = roda no pipeline agendado. 'automatico: false' = só sob demanda.",
   "_roles": "Roles devem ser IDs numéricos (não texto). Veja Admin → Roles no Brightspace.",
-  
+
   "Uso do instrutor": {
     "automatico": true,
     "ativo": true,
@@ -12,12 +12,24 @@
       "109"
     ]
   },
+
+  "Uso do Aluno": {
+    "automatico": true,
+    "ativo": true,
+    "parentOrgUnitId": "6606",
+    "startDate": "2025-01-01T00:00:00.000Z",
+    "endDate": "2025-12-31T23:59:59.999Z",
+    "roles": [
+      "112"
+    ]
+  },
+
   "Notas finais": {
-    "automatico": false,
+    "automatico": true,
     "ativo": true,
     "parentOrgUnitId": "6606",
     "startDate": "2026-01-01T00:00:00.000Z",
-    "endDate": "2026-15-06T23:59:59.999Z",
+    "endDate": "2026-06-15T23:59:59.999Z",
     "roles": [
       "116"
     ]

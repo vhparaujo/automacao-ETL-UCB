@@ -45,3 +45,17 @@
     "endDate": "2025-12-31T23:59:59.999Z",
     "roles": ["110"]
   }
+
+
+   "automaticos": [
+    "Usuários",
+    "Unidades organizacionais",
+    "Objetos de nota",
+    "Resultados de nota",
+    "Objetos de conteúdo",
+    "Matrículas do usuário",
+    "Log de acesso ao curso",
+    "Acesso ao curso",
+    "Postagens de discussão",
+    "Log de acesso ao sistema"
+  ]

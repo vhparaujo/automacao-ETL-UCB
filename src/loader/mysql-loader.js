@@ -64,21 +64,20 @@ function tipoColuna(nome) {
 }
 
 async function criarOuRecriarTabela(conn, tabela, colunas, schemaFixo) {
-  // Se tem schema fixo, DROP + CREATE com tipos corretos
-  // Se não, CREATE IF NOT EXISTS com tipos inferidos
   if (schemaFixo) {
+    // Usa exatamente as colunas do schema (ignora colunas extras do CSV com nomes longos)
     await conn.execute(`DROP TABLE IF EXISTS \`${tabela}\``);
-    const definicoes = colunas
-      .map((c) => {
-        const tipo = schemaFixo[c] || 'TEXT';
-        return `\`${c}\` ${tipo}`;
-      })
+    const definicoes = Object.entries(schemaFixo)
+      .map(([c, tipo]) => `\`${c}\` ${tipo}`)
       .join(',\n  ');
     await conn.execute(
       `CREATE TABLE \`${tabela}\` (\n  ${definicoes}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
     );
   } else {
-    const definicoes = colunas.map((c) => `\`${c}\` ${tipoColuna(c)}`).join(',\n  ');
+    // Trunca nomes de coluna para respeitar o limite de 64 chars do MySQL
+    const definicoes = colunas
+      .map((c) => `\`${c.substring(0, 64)}\` ${tipoColuna(c)}`)
+      .join(',\n  ');
     await conn.execute(
       `CREATE TABLE IF NOT EXISTS \`${tabela}\` (\n  ${definicoes}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
     );
@@ -95,13 +94,17 @@ async function carregarCSV(conn, csvPath, schemas) {
 
   await criarOuRecriarTabela(conn, tabela, colunas, schemaEntry?.colunas);
 
-  const vars = colunas.map((c) => `@${c.replace(/[^a-zA-Z0-9]/g, '_')}`).join(', ');
-  const sets = colunas
-    .map((c) => {
-      const v = c.replace(/[^a-zA-Z0-9]/g, '_');
-      return `\`${c}\` = NULLIF(@${v}, '')`;
-    })
-    .join(',\n  ');
+  // Variáveis posicionais evitam o limite de 64 chars do MySQL em nomes de identificadores
+  const vars = colunas.map((_, i) => `@col_${i}`).join(', ');
+
+  const sets = schemaEntry?.colunas
+    ? colunas
+        .map((c, i) => (schemaEntry.colunas[c] !== undefined ? `\`${c}\` = NULLIF(@col_${i}, '')` : null))
+        .filter(Boolean)
+        .join(',\n  ')
+    : colunas
+        .map((c, i) => `\`${c.substring(0, 64)}\` = NULLIF(@col_${i}, '')`)
+        .join(',\n  ');
 
   const sql = `
     LOAD DATA LOCAL INFILE '${absPath}'

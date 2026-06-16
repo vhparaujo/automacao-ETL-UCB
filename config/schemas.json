@@ -76,6 +76,156 @@
     }
   },
 
+  "GradeResults": {
+    "tabela": "graderesults",
+    "colunas": {
+      "GradeObjectId":       "INT",
+      "OrgUnitId":           "INT",
+      "UserId":              "INT",
+      "PointsNumerator":     "DECIMAL(10,4)",
+      "PointsDenominator":   "DECIMAL(10,4)",
+      "WeightedNumerator":   "DECIMAL(10,4)",
+      "WeightedDenominator": "DECIMAL(10,4)",
+      "IsReleased":          "TINYINT(1)",
+      "IsDropped":           "TINYINT(1)",
+      "IsExempt":            "TINYINT(1)",
+      "LastModified":        "DATETIME",
+      "LastModifiedBy":      "INT",
+      "Comments":            "TEXT",
+      "PrivateComments":     "TEXT",
+      "GradeText":           "VARCHAR(255)",
+      "GradeReleasedDate":   "DATETIME",
+      "Version":             "INT"
+    }
+  },
+
+  "ContentObjects": {
+    "tabela": "contentobjects",
+    "colunas": {
+      "ContentObjectId":        "INT",
+      "OrgUnitId":              "INT",
+      "Title":                  "VARCHAR(500)",
+      "ContentObjectType":      "VARCHAR(100)",
+      "CompletionType":         "VARCHAR(100)",
+      "ParentContentObjectId":  "INT",
+      "Location":               "TEXT",
+      "StartDate":              "DATETIME",
+      "EndDate":                "DATETIME",
+      "DueDate":                "DATETIME",
+      "ObjectId1":              "INT",
+      "ObjectId2":              "INT",
+      "ObjectId3":              "INT",
+      "LastModified":           "DATETIME",
+      "IsDeleted":              "TINYINT(1)",
+      "SortOrder":              "INT",
+      "Depth":                  "INT",
+      "ToolId":                 "INT",
+      "IsHidden":               "TINYINT(1)",
+      "ResultId":               "INT",
+      "DeletedDate":            "DATETIME",
+      "CreatedBy":              "INT",
+      "LastModifiedBy":         "INT",
+      "DeletedBy":              "INT",
+      "AIUtilization":          "VARCHAR(100)"
+    }
+  },
+
+  "UserEnrollments": {
+    "tabela": "userenrollments",
+    "colunas": {
+      "OrgUnitId":      "INT",
+      "UserId":         "INT",
+      "RoleName":       "VARCHAR(100)",
+      "EnrollmentDate": "DATETIME",
+      "EnrollmentType": "VARCHAR(100)",
+      "RoleId":         "INT"
+    }
+  },
+
+  "CourseAccessLog": {
+    "tabela": "courseaccesslog",
+    "colunas": {
+      "OrgUnitId": "INT",
+      "UserId":    "INT",
+      "Timestamp": "DATETIME",
+      "Source":    "VARCHAR(100)"
+    }
+  },
+
+  "CourseAccess": {
+    "tabela": "courseaccess",
+    "colunas": {
+      "OrgUnitId":   "INT",
+      "UserId":      "INT",
+      "DayAccessed": "DATE"
+    }
+  },
+
+  "SystemAccessLog": {
+    "tabela": "systemaccesslog",
+    "colunas": {
+      "SessionId":     "VARCHAR(100)",
+      "UserId":        "INT",
+      "Timestamp":     "DATETIME",
+      "State":         "VARCHAR(100)",
+      "Source":        "VARCHAR(100)",
+      "AppVersion":    "VARCHAR(100)",
+      "Device":        "VARCHAR(100)",
+      "IsOfflineMode": "TINYINT(1)",
+      "IPAddress":     "VARCHAR(50)"
+    }
+  },
+
+  "DiscussionPosts": {
+    "tabela": "discussionposts",
+    "colunas": {
+      "OrgUnitId":       "INT",
+      "TopicId":         "INT",
+      "UserId":          "INT",
+      "PostId":          "INT",
+      "ThreadId":        "INT",
+      "IsReply":         "TINYINT(1)",
+      "ParentPostId":    "INT",
+      "NumReplies":      "INT",
+      "DatePosted":      "DATETIME",
+      "IsDeleted":       "TINYINT(1)",
+      "RatingSum":       "INT",
+      "NumRatings":      "INT",
+      "Score":           "DECIMAL(10,2)",
+      "LastEditDate":    "DATETIME",
+      "SortOrder":       "INT",
+      "Depth":           "INT",
+      "Thread":          "TEXT",
+      "WordCount":       "INT",
+      "AttachmentCount": "INT",
+      "Version":         "INT"
+    }
+  },
+
+  "notas_finais": {
+    "tabela": "notas_finais",
+    "colunas": {
+      "Nome de usuário":                "VARCHAR(255)",
+      "Nome":                           "VARCHAR(150)",
+      "Sobrenome":                      "VARCHAR(150)",
+      "ID definido da organização":     "VARCHAR(100)",
+      "ID do Usuário":                  "INT",
+      "Nome da função":                 "VARCHAR(100)",
+      "ID da função":                   "INT",
+      "Ativo":                          "TINYINT(1)",
+      "Nome da oferta de curso":        "VARCHAR(255)",
+      "Código da oferta de curso":      "VARCHAR(100)",
+      "ID da oferta de curso":          "INT",
+      "Nota Final Calculada":           "DECIMAL(10,4)",
+      "Nota Final Ajustada":            "DECIMAL(10,4)",
+      "Esquema de nota - Símbolo":      "VARCHAR(100)",
+      "Nota Liberada":                  "TINYINT(1)",
+      "Data de Liberação da Nota":      "DATETIME",
+      "Última Modificação da Nota":     "DATETIME",
+      "Comentários de nota final":      "TEXT"
+    }
+  },
+
   "uso_do_instrutor": {
     "tabela": "uso_do_instrutor",
     "colunas": {
@@ -103,6 +253,47 @@
       "Último Acesso à Oferta de Curso":                "DATETIME",
       "Número de logons no sistema":                    "INT",
       "Data do Último e-mail Enviado":                  "DATETIME"
+    }
+  },
+
+  "uso_do_aluno": {
+    "tabela": "uso_do_aluno",
+    "colunas": {
+      "Id de Oferta de Curso":                                    "INT",
+      "Código da Oferta de Curso":                               "VARCHAR(100)",
+      "Nome da Oferta de Curso":                                 "VARCHAR(255)",
+      "Nome do Departamentos Principal":                         "VARCHAR(255)",
+      "Código do Departamentos Principal":                       "VARCHAR(100)",
+      "Id do Semestre":                                          "INT",
+      "Código do Semestre":                                      "VARCHAR(100)",
+      "Nome do Semestre":                                        "VARCHAR(255)",
+      "Id do Usuário":                                           "INT",
+      "Nome de usuário":                                         "VARCHAR(255)",
+      "ID Definido da Organização":                              "VARCHAR(100)",
+      "Nome":                                                    "VARCHAR(150)",
+      "Sobrenome":                                               "VARCHAR(150)",
+      "Ativo":                                                   "TINYINT(1)",
+      "Id da Função":                                            "INT",
+      "Nome da Função":                                          "VARCHAR(100)",
+      "Conteúdo Concluído":                                      "INT",
+      "Conteúdo Necessário":                                     "INT",
+      "Lista de Verificação Concluída":                          "INT",
+      "Questionário Concluído":                                  "INT",
+      "Total de Tentativas de Realização do Questionário":       "INT",
+      "Postagem de Discussão Criada":                            "INT",
+      "Respostas à Postagem de Discussão":                       "INT",
+      "Postagem de Discussão Lida":                              "INT",
+      "Última Data de Postagem de Discussão":                    "DATETIME",
+      "Número de Envios de Atribuições":                         "INT",
+      "Última Data de Envio da Atribuição":                      "DATETIME",
+      "Total de Tempo Gasto no Conteúdo":                        "BIGINT",
+      "Data da Última Visita":                                   "DATETIME",
+      "Último Logon do Sistema":                                 "DATETIME",
+      "Número de Logons ao Sistema":                             "INT",
+      "Nome do Auditor":                                         "VARCHAR(255)",
+      "Data da última tentativa de realização do teste":         "DATETIME",
+      "Conclusao SCORM":                                         "INT",
+      "Ultima Visita SCORM":                                     "DATETIME"
     }
   }
 }

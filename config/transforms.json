@@ -32,6 +32,14 @@
       "descricao": "Exporta objetos de nota"
     },
     {
+      "nome": "export_notas_finais",
+      "arquivo": "src/transforms/queries/export_notas_finais.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/notas_finais.csv",
+      "descricao": "Exporta notas finais dos alunos por oferta de curso"
+    },
+    {
       "nome": "export_uso_instrutor",
       "arquivo": "src/transforms/queries/export_uso_instrutor.sql",
       "ativo": true,
@@ -40,11 +48,60 @@
       "descricao": "Exporta relatório de uso do instrutor"
     },
     {
-      "nome": "exemplo_view",
-      "arquivo": "src/transforms/queries/exemplo.sql",
-      "ativo": false,
-      "tipo": "view",
-      "descricao": "Exemplo comentado — desativado"
+      "nome": "export_uso_aluno",
+      "arquivo": "src/transforms/queries/export_uso_aluno.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/uso_do_aluno.csv",
+      "descricao": "Exporta relatório de uso do aluno"
+    },
+    {
+      "nome": "export_objetos_conteudo",
+      "arquivo": "src/transforms/queries/export_objetos_conteudo.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/objetos_conteudo.csv",
+      "descricao": "Exporta objetos de conteúdo dos cursos"
+    },
+    {
+      "nome": "export_resultados_notas",
+      "arquivo": "src/transforms/queries/export_resultados_notas.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/resultados_notas.csv",
+      "descricao": "Exporta resultados de notas por aluno"
+    },
+    {
+      "nome": "export_matriculas",
+      "arquivo": "src/transforms/queries/export_matriculas.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/matriculas.csv",
+      "descricao": "Exporta matrículas dos usuários nas unidades organizacionais"
+    },
+    {
+      "nome": "export_log_acesso_curso",
+      "arquivo": "src/transforms/queries/export_log_acesso_curso.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/log_acesso_curso.csv",
+      "descricao": "Exporta log de acesso aos cursos"
+    },
+    {
+      "nome": "export_acesso_curso",
+      "arquivo": "src/transforms/queries/export_acesso_curso.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/acesso_curso.csv",
+      "descricao": "Exporta dias de acesso ao curso por usuário"
+    },
+    {
+      "nome": "export_posts_discussao",
+      "arquivo": "src/transforms/queries/export_posts_discussao.sql",
+      "ativo": true,
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/posts_discussao.csv",
+      "descricao": "Exporta posts de discussão"
     }
   ]
 }
