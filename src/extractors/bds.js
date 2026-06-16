@@ -7,11 +7,11 @@ const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const AdmZip = require('adm-zip');
 const { getAccessToken } = require('../auth/oauth');
+const { obterVersaoLP } = require('../utils/versao-api');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 const ZIPS_DIR = path.join(CSVS_DIR, 'zips');
-const VERSOES_LP = ['1.50', '1.48', '1.47', '1.46', '1.45', '1.44', '1.43'];
 
 function requisicaoAPI(url, token) {
   return new Promise((resolve, reject) => {
@@ -37,23 +37,6 @@ function requisicaoAPI(url, token) {
     req.on('error', reject);
     req.end();
   });
-}
-
-async function descobrirVersaoAPI(token) {
-  const tentativas = [];
-  for (const versao of VERSOES_LP) {
-    try {
-      await requisicaoAPI(`${HOST}/d2l/api/lp/${versao}/datasets/bds`, token);
-      return versao;
-    } catch (e) {
-      tentativas.push(`  LP ${versao}: ${e.message.substring(0, 120)}`);
-    }
-  }
-  throw new Error(
-    `Nenhuma versão da API LP respondeu para /datasets/bds.\n` +
-    `Diagnóstico:\n${tentativas.join('\n')}\n\n` +
-    `→ Verifique se o scope 'datasets:bds:read' está no app OAuth do Brightspace e rode: npm run setup`
-  );
 }
 
 function baixarArquivo(downloadUrl, destino, token) {
@@ -114,7 +97,7 @@ function extrairZip(zipPath, destDir) {
 // Retorna todos os datasets disponíveis na API (usado pela CLI)
 async function listar() {
   const token = await getAccessToken();
-  const versao = await descobrirVersaoAPI(token);
+  const versao = await obterVersaoLP();
   const lista = await requisicaoAPI(`${HOST}/d2l/api/lp/${versao}/datasets/bds`, token);
   return (lista.Objects || []).map((ds) => ({
     nome: ds.Full?.Name || 'Desconhecido',
@@ -133,7 +116,7 @@ async function download(opcoes = {}) {
   fs.mkdirSync(ZIPS_DIR, { recursive: true });
 
   const token = await getAccessToken();
-  const versao = await descobrirVersaoAPI(token);
+  const versao = await obterVersaoLP();
 
   const listaAPI = await requisicaoAPI(`${HOST}/d2l/api/lp/${versao}/datasets/bds`, token);
   const todosDatasets = listaAPI.Objects || [];

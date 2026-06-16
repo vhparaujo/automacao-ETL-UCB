@@ -7,15 +7,13 @@ const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
 const AdmZip = require('adm-zip');
 const { getAccessToken } = require('../auth/oauth');
+const { obterVersaoLP } = require('../utils/versao-api');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 const ZIPS_DIR = path.join(CSVS_DIR, 'zips');
-const VERSOES_LP = ['1.50', '1.48', '1.47', '1.46', '1.45', '1.44', '1.43', '1.30', '1.20', '1.13'];
 const POLLING_INTERVALO = 10_000;
 const POLLING_TIMEOUT = 30 * 60 * 1000;
-// Status da API D2L: 0=processando, 1=erro, 2=completo
-const STATUS = { PROCESSANDO: 0, ERRO: 1, COMPLETO: 2 };
 
 function requisicao(url, token, opcoes = {}) {
   return new Promise((resolve, reject) => {
@@ -54,19 +52,6 @@ function requisicao(url, token, opcoes = {}) {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-async function descobrirVersaoAPI(token) {
-  const tentativas = [];
-  for (const versao of VERSOES_LP) {
-    try {
-      await requisicao(`${HOST}/d2l/api/lp/${versao}/dataExport/list`, token);
-      return versao;
-    } catch (e) {
-      tentativas.push(`  LP ${versao}: ${e.message.substring(0, 100)}`);
-    }
-  }
-  throw new Error(`Nenhuma versão respondeu para /dataExport/list.\n${tentativas.join('\n')}`);
-}
-
 function baixarArquivo(downloadUrl, destino, token) {
   return new Promise((resolve, reject) => {
     const fazerRequisicao = (url, redirecionamentos = 0) => {
@@ -102,7 +87,7 @@ function baixarArquivo(downloadUrl, destino, token) {
 // Retorna todos os ADS disponíveis na API (usado pela CLI)
 async function listar() {
   const token = await getAccessToken();
-  const versao = await descobrirVersaoAPI(token);
+  const versao = await obterVersaoLP();
   const resp = await requisicao(`${HOST}/d2l/api/lp/${versao}/dataExport/list`, token);
   const lista = Array.isArray(resp) ? resp : resp.Objects || [];
   return lista.map((r) => ({ nome: r.Name, dataSetId: r.DataSetId, versao }));
@@ -132,6 +117,7 @@ async function processarJob(nome, config, versao, token) {
   );
 
   const jobId = job.ExportJobId;
+  const downloadUrl = `${HOST}/d2l/api/lp/${versao}/dataExport/download/${jobId}`;
   console.log(`      Job criado (ID: ${jobId}), aguardando...`);
 
   const inicio = Date.now();
@@ -140,35 +126,42 @@ async function processarJob(nome, config, versao, token) {
   while (Date.now() - inicio < POLLING_TIMEOUT) {
     await sleep(POLLING_INTERVALO);
     tentativas++;
-
-    const jobData = await requisicao(
-      `${HOST}/d2l/api/lp/${versao}/dataExport/jobs/${jobId}`,
-      token
-    );
-
     process.stdout.write(`\r      🔄 Processando... (${tentativas * (POLLING_INTERVALO / 1000)}s)   `);
 
-    if (jobData.Status === STATUS.COMPLETO) {
+    // 404 = ainda processando; 200 = pronto (o próprio GET retorna o ZIP)
+    const pronto = await new Promise((resolve, reject) => {
+      const parsed = new URL(downloadUrl);
+      const req = https.request(
+        {
+          hostname: parsed.hostname,
+          path: parsed.pathname + parsed.search,
+          method: 'HEAD',
+          headers: { Authorization: `Bearer ${token}` },
+        },
+        (res) => {
+          if (res.statusCode === 404) return resolve(false);
+          if (res.statusCode === 200) return resolve(true);
+          reject(new Error(`HTTP ${res.statusCode} ao verificar status do job`));
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    if (pronto) {
       process.stdout.write('\n');
       const zipPath = path.join(ZIPS_DIR, `ADS_${nome.replace(/[^a-zA-Z0-9]/g, '_')}.zip`);
-      await baixarArquivo(`${HOST}/d2l/api/lp/${versao}/dataExport/download/${jobId}`, zipPath, token);
+      await baixarArquivo(downloadUrl, zipPath, token);
 
-      // Extrai o CSV com nome fixo (sem timestamp) baseado no nome do relatório
       const nomeFixo = nome.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase() + '.csv';
       const zip = new AdmZip(zipPath);
       zip.getEntries().forEach((entry) => {
         if (!entry.isDirectory && entry.entryName.endsWith('.csv')) {
-          const destino = path.join(CSVS_DIR, nomeFixo);
-          fs.writeFileSync(destino, entry.getData());
+          fs.writeFileSync(path.join(CSVS_DIR, nomeFixo), entry.getData());
         }
       });
       fs.unlinkSync(zipPath);
       return true;
-    }
-
-    if (jobData.Status === STATUS.ERRO) {
-      process.stdout.write('\n');
-      throw new Error('Job falhou no servidor D2L.');
     }
   }
 
@@ -208,7 +201,7 @@ async function download(opcoes = {}) {
   }
 
   const token = await getAccessToken();
-  const versao = await descobrirVersaoAPI(token);
+  const versao = await obterVersaoLP();
   const label = modo === 'auto' ? 'automáticos' : modo === 'todos' ? 'todos' : 'selecionados';
 
   console.log(`\n📊 ADS — Baixando ${relatorios.length} relatório(s) ${label} (API LP ${versao})...`);

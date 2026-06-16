@@ -7,6 +7,8 @@ const fs = require('node:fs');
 const { exec } = require('node:child_process');
 const selfsigned = require('selfsigned');
 
+const { obterVersaoLP } = require('../utils/versao-api');
+
 const TOKENS_FILE = '.tokens.json';
 const AUTH_URL = 'https://auth.brightspace.com/oauth2/auth';
 const TOKEN_URL = 'https://auth.brightspace.com/core/connect/token';
@@ -230,35 +232,29 @@ async function test() {
   console.log('\n🧪 Testando autenticação...');
   const token = await getAccessToken();
   const host = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
-  const versoes = ['1.50', '1.48', '1.47'];
+  const versao = await obterVersaoLP();
 
-  for (const versao of versoes) {
-    const url = new URL(`${host}/d2l/api/lp/${versao}/users/whoami`);
-    const resultado = await new Promise((resolve, reject) => {
-      const req = https.request(
-        { hostname: url.hostname, path: url.pathname, headers: { Authorization: `Bearer ${token}` } },
-        (res) => {
-          let data = '';
-          res.on('data', (c) => (data += c));
-          res.on('end', () => resolve({ status: res.statusCode, data: JSON.parse(data) }));
-        }
-      );
-      req.on('error', reject);
-      req.end();
-    });
+  const url = new URL(`${host}/d2l/api/lp/${versao}/users/whoami`);
+  const resultado = await new Promise((resolve, reject) => {
+    const req = https.request(
+      { hostname: url.hostname, path: url.pathname, headers: { Authorization: `Bearer ${token}` } },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => resolve({ status: res.statusCode, data: JSON.parse(data) }));
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
 
-    if (resultado.status === 200) {
-      console.log(`✅ Autenticado com sucesso (API LP ${versao})`);
-      console.log(`   Usuário: ${resultado.data.UniqueName || resultado.data.Identifier}`);
-      console.log(`   ID: ${resultado.data.Identifier}`);
-      return;
-    }
-    if (resultado.status !== 404) {
-      console.log(`❌ Erro ${resultado.status} na versão ${versao}: ${JSON.stringify(resultado.data)}`);
-      return;
-    }
+  if (resultado.status === 200) {
+    console.log(`✅ Autenticado com sucesso (API LP ${versao})`);
+    console.log(`   Usuário: ${resultado.data.UniqueName || resultado.data.Identifier}`);
+    console.log(`   ID: ${resultado.data.Identifier}`);
+  } else {
+    console.log(`❌ Erro ${resultado.status} (API LP ${versao}): ${JSON.stringify(resultado.data)}`);
   }
-  console.log('❌ Nenhuma versão da API LP respondeu com sucesso.');
 }
 
 if (require.main === module) {
