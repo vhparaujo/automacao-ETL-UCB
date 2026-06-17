@@ -66,7 +66,7 @@
     {
       "nome": "export_resultados_notas",
       "arquivo": "src/transforms/queries/export_resultados_notas.sql",
-      "ativo": true,
+      "ativo": false,
       "tipo": "exportar_csv",
       "arquivo_saida": "exports/resultados_notas.csv",
       "descricao": "Exporta resultados de notas por aluno"
