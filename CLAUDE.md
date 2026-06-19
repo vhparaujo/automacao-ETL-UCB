@@ -56,81 +56,59 @@ brightspace-etl/
 
 ---
 
-## Fase 1 — Autenticação OAuth 2.0
+## Fase 1 — Autenticação OAuth 2.0 (pacote `brightspace-auth`)
 
 ### Contexto
 
-A UCB já tem a aba **OAuth 2.0** habilitada no Manage Extensibility do Brightspace
-(confirmado via screenshots). Os apps existentes usam **Authorization** (Authorization
-Code Grant). O mesmo fluxo deve ser usado aqui, pois o fluxo Client Credentials
-(server-to-server com JWT) requer Service Users que podem ainda não estar disponíveis.
+A autenticação é delegada ao pacote **`brightspace-auth`**
+(`github:vhparaujo/Authorization-Service-UCB`), que encapsula todo o fluxo
+**Authorization Code Grant com Refresh Token**: setup interativo, servidor HTTPS local
+de callback (certificado autoassinado via `selfsigned`, dependência interna do pacote),
+troca de code por tokens, cache em `.tokens.json` e renovação automática.
 
-### Fluxo a implementar: Authorization Code Grant com Refresh Token
+> **Não reimplementar OAuth manualmente neste projeto.** Toda a lógica de autenticação
+> vive no pacote `brightspace-auth`. O `src/auth/oauth.js` é apenas um wrapper fino.
 
-```
-1. Usuário roda: node src/auth/oauth.js --setup
-2. App sobe um servidor HTTPS local na porta 9876 com certificado autoassinado
-3. App abre URL de autorização no navegador:
-   https://auth.brightspace.com/oauth2/auth
-     ?response_type=code
-     &client_id=CLIENT_ID
-     &redirect_uri=https://localhost:9876/callback
-     &scope=datahub:dataExports:download datahub:dataExports:read core:*:*
-4. Usuário faz login no Brightspace e autoriza
-5. Brightspace redireciona para https://localhost:9876/callback?code=XXX
-   (O navegador pode exibir aviso de certificado autoassinado — clicar em "Avançar")
-6. App captura o code, troca por access_token + refresh_token via POST ao token endpoint
-7. Tokens são salvos em .tokens.json com permissão 600
-8. Em execuções futuras: usa refresh_token para obter novo access_token automaticamente
-```
-
-### Servidor HTTPS local para o callback
-
-O Brightspace exige HTTPS no redirect URI. Usar o módulo `https` nativo do Node.js
-com certificado autoassinado gerado em memória via `selfsigned` (npm):
+### Como o pacote é usado
 
 ```javascript
-// Gerar certificado autoassinado em memória (sem salvar em disco)
-// npm install selfsigned
-const selfsigned = require('selfsigned');
-const attrs = [{ name: 'commonName', value: 'localhost' }];
-const pems = selfsigned.generate(attrs, { days: 1 });
+require('dotenv').config();
+const { BrightspaceAuth } = require('brightspace-auth');
 
-const server = https.createServer(
-  { key: pems.private, cert: pems.cert },
-  requestHandler
-);
-server.listen(9876);
+const auth = new BrightspaceAuth({
+  clientId:     process.env.BRIGHTSPACE_CLIENT_ID,
+  clientSecret: process.env.BRIGHTSPACE_CLIENT_SECRET,
+  redirectUri:  process.env.BRIGHTSPACE_REDIRECT_URI,
+  scopes:       process.env.BRIGHTSPACE_SCOPES,
+});
 
-// O servidor deve ser encerrado imediatamente após capturar o code
-// Não deixar o servidor rodando após o setup
+// Primeira vez (uma única vez por projeto): abre o browser e salva os tokens
+await auth.setup();
+
+// Uso normal: retorna token válido, renovando via refresh_token se necessário
+const token = await auth.getAccessToken();
 ```
 
-### Endpoints de autenticação
-
-```
-Authorization: https://auth.brightspace.com/oauth2/auth
-Token:         https://auth.brightspace.com/core/connect/token
-```
-
-### Implementação do src/auth/oauth.js
+### Implementação do src/auth/oauth.js (wrapper)
 
 ```javascript
-// Responsabilidades:
-// 1. --setup: sobe servidor HTTPS local (porta 9876) com certificado autoassinado
-//             via biblioteca 'selfsigned', abre o fluxo de autorização no browser,
-//             captura o code no callback, troca por tokens, salva em .tokens.json
-// 2. getAccessToken(): retorna token válido (renova via refresh_token se necessário)
-// 3. Salvar/carregar tokens de arquivo local .tokens.json (nunca commitar)
-// 4. O servidor HTTPS local deve ser encerrado logo após capturar o code
-
-// Scopes necessários:
-const SCOPES = [
-  'datahub:dataExports:download',
-  'datahub:dataExports:read',
-  'core:*:*'
-].join(' ');
+// Responsabilidades (todas delegadas ao pacote brightspace-auth):
+// 1. Criar uma instância única de BrightspaceAuth com as credenciais/scopes do .env
+// 2. getAccessToken(): delega para auth.getAccessToken() (token válido, renova sozinho)
+// 3. --setup: delega para auth.setup() (fluxo interativo de autorização, 1x por projeto)
+// 4. --test:  valida a autenticação chamando /users/whoami com o token obtido
+//
+// module.exports = { getAccessToken }  ← interface consumida por pipeline/bds/ads/etc.
+//
+// Scopes: lidos de BRIGHTSPACE_SCOPES no .env. Default da UCB caso ausente:
+//   'datahub:dataExports:download datahub:dataExports:read datasets:bds:read core:*:*'
 ```
+
+### Pré-requisito por projeto consumidor
+
+Antes do primeiro uso: copiar `.env.example` para `.env` e preencher as credenciais
+reais do Brightspace. Em seguida rodar `npm run setup` **uma única vez** — depois os
+tokens ficam salvos em `.tokens.json` e são renovados automaticamente.
 
 ### Registro do App no Brightspace (já realizado pelo usuário)
 
@@ -423,6 +401,7 @@ BRIGHTSPACE_HOST=https://ava.catolica.edu.br
 BRIGHTSPACE_CLIENT_ID=seu_client_id_aqui
 BRIGHTSPACE_CLIENT_SECRET=seu_client_secret_aqui
 BRIGHTSPACE_REDIRECT_URI=https://localhost:9876/callback
+BRIGHTSPACE_SCOPES=datahub:dataExports:download datahub:dataExports:read datasets:bds:read core:*:*
 
 # MySQL
 DB_HOST=127.0.0.1
@@ -445,15 +424,18 @@ LOGS_DIR=./logs
 ```json
 {
   "dependencies": {
+    "brightspace-auth": "github:vhparaujo/Authorization-Service-UCB",
     "mysql2": "^3.x",
     "node-cron": "^3.x",
     "dotenv": "^16.x",
     "csv-stringify": "^6.x",
-    "adm-zip": "^0.5.x",
-    "selfsigned": "^2.x"
+    "adm-zip": "^0.5.x"
   }
 }
 ```
+
+> `selfsigned` deixou de ser dependência direta — agora é dependência interna do
+> pacote `brightspace-auth`, que cuida de todo o fluxo OAuth.
 
 ---
 
@@ -467,8 +449,8 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 - [ ] Criar `.env.example` e `.gitignore`
 - [ ] Criar `config/schedule.json`, `config/ads-filters.json`, `config/transforms.json` com exemplos
 
-### Etapa 2 — Autenticação
-- [ ] Implementar `src/auth/oauth.js`
+### Etapa 2 — Autenticação (pacote `brightspace-auth`)
+- [ ] `src/auth/oauth.js` é um wrapper sobre `BrightspaceAuth` (não reimplementar OAuth)
 - [ ] Testar: `node src/auth/oauth.js --setup` abre o browser e salva tokens
 - [ ] Testar: `node src/auth/oauth.js --test` retorna `{ ok: true, user: '...' }`
 

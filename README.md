@@ -39,11 +39,15 @@ SET GLOBAL local_infile = 1;
 
 ## Primeiro uso — Autenticação OAuth
 
+A autenticação é feita pelo pacote [`brightspace-auth`](https://github.com/vhparaujo/Authorization-Service-UCB), que cuida do fluxo OAuth 2.0 (Authorization Code + Refresh Token), do cache dos tokens e da renovação automática. As credenciais e os scopes vêm do `.env` (`BRIGHTSPACE_CLIENT_ID`, `BRIGHTSPACE_CLIENT_SECRET`, `BRIGHTSPACE_REDIRECT_URI`, `BRIGHTSPACE_SCOPES`).
+
+Rode o setup **uma única vez** por projeto:
+
 ```bash
 npm run setup
 ```
 
-Abre o navegador para login no Brightspace. Aceite o aviso de certificado autoassinado e autorize o app. Os tokens são salvos localmente em `.tokens.json`.
+Abre o navegador para login no Brightspace. Aceite o aviso de certificado autoassinado e autorize o app. Os tokens são salvos localmente em `.tokens.json` e, a partir daí, renovados automaticamente via refresh token — não é preciso repetir o login.
 
 Para verificar se a autenticação está funcionando:
 
@@ -223,6 +227,7 @@ BRIGHTSPACE_HOST=https://ava.catolica.edu.br
 BRIGHTSPACE_CLIENT_ID=seu_client_id
 BRIGHTSPACE_CLIENT_SECRET=seu_client_secret
 BRIGHTSPACE_REDIRECT_URI=https://localhost:9876/callback
+BRIGHTSPACE_SCOPES=datahub:dataExports:download datahub:dataExports:read datasets:bds:read core:*:*
 
 # MySQL
 DB_HOST=127.0.0.1
