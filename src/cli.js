@@ -5,6 +5,7 @@ const readline = require('node:readline');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { resolverData, EXPRESSOES_VALIDAS } = require('./utils/datas');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
 
@@ -150,6 +151,35 @@ async function toggleADS() {
   await perguntar('\nPressione Enter para voltar...');
 }
 
+// Explica os formatos aceitos nos campos de data dos filtros ADS
+function explicarFormatosData() {
+  console.log('\n  📅 Datas aceitam:');
+  console.log('     • YYYY-MM-DD           → data fixa (ex.: 2026-01-01)');
+  console.log('     • hoje                 → dia da execução (início 00:00 / fim 23:59:59.999 UTC)');
+  console.log('     • -Nd                  → N dias atrás (ex.: -180d)');
+  console.log('     • inicio_ano, fim_ano  → ano corrente');
+  console.log('     • inicio_semestre, fim_semestre → semestre corrente (1 = jan–jun, 2 = jul–dez)');
+  console.log('     Expressões relativas são recalculadas a cada execução do pipeline.\n');
+}
+
+// Pergunta uma data e retorna o valor a salvar no ads-filters.json.
+// YYYY-MM-DD vira ISO UTC (comportamento anterior); expressões relativas são salvas como texto.
+async function perguntarData(rotulo, campo, padrao) {
+  while (true) {
+    const entrada = (await perguntar(`${rotulo} [${padrao}]: `)).trim() || padrao;
+    const valor = /^\d{4}-\d{2}-\d{2}$/.test(entrada)
+      ? `${entrada}${campo === 'inicio' ? 'T00:00:00.000Z' : 'T23:59:59.999Z'}`
+      : entrada;
+    try {
+      const resolvida = resolverData(valor, campo, new Date());
+      if (resolvida !== valor) console.log(`     → hoje equivale a ${resolvida}`);
+      return valor;
+    } catch {
+      console.log(`  ❌ Valor inválido. Use: YYYY-MM-DD, ${EXPRESSOES_VALIDAS}`);
+    }
+  }
+}
+
 async function adicionarADS() {
   limparTela();
   console.log('➕ Adicionar relatório ADS\n');
@@ -159,8 +189,9 @@ async function adicionarADS() {
   if (!nome.trim()) return;
 
   const orgUnitId = (await perguntar(`OrgUnitId [6606]: `)).trim() || '6606';
-  const startDate = (await perguntar('Data início (YYYY-MM-DD) [2025-01-01]: ')).trim() || '2025-01-01';
-  const endDate = (await perguntar('Data fim (YYYY-MM-DD) [2025-12-31]: ')).trim() || '2025-12-31';
+  explicarFormatosData();
+  const startDate = await perguntarData('Data início', 'inicio', '2025-01-01');
+  const endDate = await perguntarData('Data fim', 'fim', '2025-12-31');
   const rolesStr = await perguntar('IDs das roles (vírgula, ex: 109,110) ou Enter para pular: ');
   const roles = rolesStr.trim() ? rolesStr.split(',').map((r) => r.trim()) : [];
   const autoStr = await perguntar('Baixar automaticamente no pipeline? (s/N): ');
@@ -169,8 +200,8 @@ async function adicionarADS() {
     automatico: autoStr.toLowerCase() === 's',
     ativo: true,
     parentOrgUnitId: orgUnitId,
-    startDate: `${startDate}T00:00:00.000Z`,
-    endDate: `${endDate}T23:59:59.999Z`,
+    startDate,
+    endDate,
     ...(roles.length > 0 ? { roles } : {}),
   };
 
@@ -396,15 +427,16 @@ async function demandaADSEspecifico() {
   if (!configRelatorio) {
     console.log(`\n"${nomeEscolhido}" não tem configuração salva. Preencha os filtros:\n`);
     const orgUnitId = (await perguntar('OrgUnitId [6606]: ')).trim() || '6606';
-    const startDate = (await perguntar('Data início (YYYY-MM-DD) [2025-01-01]: ')).trim() || '2025-01-01';
-    const endDate = (await perguntar('Data fim (YYYY-MM-DD) [2025-12-31]: ')).trim() || '2025-12-31';
+    explicarFormatosData();
+    const startDate = await perguntarData('Data início', 'inicio', '2025-01-01');
+    const endDate = await perguntarData('Data fim', 'fim', '2025-12-31');
     const rolesStr = await perguntar('IDs das roles (vírgula) ou Enter para pular: ');
     const roles = rolesStr.trim() ? rolesStr.split(',').map((r) => r.trim()) : [];
 
     configRelatorio = {
       parentOrgUnitId: orgUnitId,
-      startDate: `${startDate}T00:00:00.000Z`,
-      endDate: `${endDate}T23:59:59.999Z`,
+      startDate,
+      endDate,
       ...(roles.length > 0 ? { roles } : {}),
     };
 

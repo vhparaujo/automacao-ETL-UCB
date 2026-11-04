@@ -8,6 +8,7 @@ const { pipeline } = require('node:stream/promises');
 const AdmZip = require('adm-zip');
 const { getAccessToken } = require('../auth/oauth');
 const { obterVersaoLP } = require('../utils/versao-api');
+const { resolverPeriodo } = require('../utils/datas');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -94,6 +95,14 @@ async function listar() {
 }
 
 async function processarJob(nome, config, versao, token) {
+  // Resolve datas relativas ("hoje", "-180d", "inicio_semestre"…) no momento da execução.
+  // Expressão inválida lança erro aqui — download() registra e segue para o próximo relatório.
+  const periodo = resolverPeriodo(config, new Date());
+  const configEfetiva = { ...config, ...periodo };
+  if (periodo.startDate || periodo.endDate) {
+    console.log(`      📅 Período: ${periodo.startDate || '(sem início)'} → ${periodo.endDate || '(sem fim)'}`);
+  }
+
   const disponíveis = await requisicao(`${HOST}/d2l/api/lp/${versao}/dataExport/list`, token);
   const listaADS = Array.isArray(disponíveis) ? disponíveis : disponíveis.Objects || [];
 
@@ -103,7 +112,7 @@ async function processarJob(nome, config, versao, token) {
     throw new Error(`Relatório "${nome}" não encontrado. Disponíveis: ${nomes}`);
   }
 
-  const filtros = Object.entries(config)
+  const filtros = Object.entries(configEfetiva)
     .filter(([k]) => !['ativo', 'automatico'].includes(k))
     .map(([k, v]) => ({
       Name: k,
