@@ -10,7 +10,6 @@ const { download: downloadBDS } = require('./extractors/bds');
 const { download: downloadADS } = require('./extractors/ads');
 const { load } = require('./loader/mysql-loader');
 const { run: runTransforms } = require('./transforms/engine');
-const { exportarTodos } = require('./exporter/csv-exporter');
 const { notificarViews } = require('./exporter/powerbi');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
@@ -50,6 +49,7 @@ async function executarPipeline(opcoes = {}) {
     ads: opcoes.ads ?? pipe.baixar_ads ?? true,
     load: opcoes.load ?? pipe.carregar_mysql ?? true,
     transform: opcoes.transform ?? pipe.executar_transformacoes ?? true,
+    exportarCsvs: opcoes.exportarCsvs ?? pipe.exportar_csvs ?? true,
   };
 
   console.log('\n🚀 Iniciando pipeline Brightspace ETL —', new Date().toLocaleString('pt-BR'));
@@ -92,9 +92,10 @@ async function executarPipeline(opcoes = {}) {
     // Transformações
     if (flags.transform) {
       log('INFO', 'Iniciando transformações');
-      resumo.transform = await runTransforms();
-      log('INFO', `Transformações: ${resumo.transform.executadas} executadas`);
+      resumo.transform = await runTransforms({ exportarCsvs: flags.exportarCsvs });
+      log('INFO', `Transformações: ${resumo.transform.executadas} executadas, ${resumo.transform.puladas} puladas`);
       resumo.erros += resumo.transform.erros;
+      await notificarViews(resumo.transform.views);
     }
 
   } catch (e) {
@@ -112,7 +113,10 @@ async function executarPipeline(opcoes = {}) {
   if (resumo.bds) console.log(`   📦 BDS: ${resumo.bds.baixados} datasets`);
   if (resumo.ads) console.log(`   📊 ADS: ${resumo.ads.processados} relatórios`);
   if (resumo.load) console.log(`   🗄️  MySQL: ${resumo.load.carregados} tabelas — ${(resumo.load.totalLinhas || 0).toLocaleString('pt-BR')} linhas`);
-  if (resumo.transform) console.log(`   🔧 Transformações: ${resumo.transform.executadas} executadas`);
+  if (resumo.transform) {
+    const puladas = resumo.transform.puladas ? ` | ⏭️  ${resumo.transform.puladas} puladas (exportar_csvs = false)` : '';
+    console.log(`   🔧 Transformações: ${resumo.transform.executadas} executadas${puladas}`);
+  }
   if (resumo.erros > 0) console.log(`   ⚠️  ${resumo.erros} erro(s) — ver ${logFile}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 

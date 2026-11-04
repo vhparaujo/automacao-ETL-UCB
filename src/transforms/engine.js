@@ -16,13 +16,27 @@ function criarConexao() {
   });
 }
 
-async function run() {
+// Lê pipeline.exportar_csvs de config/schedule.json (padrão: true)
+function lerFlagExportarCsvs() {
+  try {
+    const config = JSON.parse(fs.readFileSync('config/schedule.json', 'utf8'));
+    return config.pipeline?.exportar_csvs !== false;
+  } catch {
+    return true;
+  }
+}
+
+// opcoes.exportarCsvs: quando false, pula as transformações do tipo "exportar_csv"
+// (view e table continuam rodando). Se omitido, usa config/schedule.json.
+// Retorna { executadas, erros, puladas, views } — views = nomes das views atualizadas com sucesso.
+async function run(opcoes = {}) {
+  const exportarCsvs = opcoes.exportarCsvs ?? lerFlagExportarCsvs();
   const config = JSON.parse(fs.readFileSync('config/transforms.json', 'utf8'));
   const transformacoes = (config.transformacoes || []).filter((t) => t.ativo !== false);
 
   if (transformacoes.length === 0) {
     console.log('ℹ️  Nenhuma transformação ativa em config/transforms.json');
-    return { executadas: 0, erros: 0 };
+    return { executadas: 0, erros: 0, puladas: 0, views: [] };
   }
 
   const conn = await criarConexao();
@@ -30,11 +44,18 @@ async function run() {
   console.log(`\n🔧 Transformações — ${transformacoes.length} ativa(s)...`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-  let executadas = 0, erros = 0;
+  let executadas = 0, erros = 0, puladas = 0;
+  const views = [];
 
   try {
     for (const t of transformacoes) {
       process.stdout.write(`  ⏳ ${t.nome.padEnd(35)}`);
+
+      if (t.tipo === 'exportar_csv' && !exportarCsvs) {
+        console.log('⏭️  pulada (exportar_csvs = false)');
+        puladas++;
+        continue;
+      }
 
       try {
         if (!fs.existsSync(t.arquivo)) {
@@ -48,6 +69,7 @@ async function run() {
         if (t.tipo === 'view') {
           await conn.query(sql);
           console.log(`✅ view atualizada`);
+          views.push(t.nome);
           executadas++;
         } else if (t.tipo === 'exportar_csv') {
           const saida = t.arquivo_saida || `exports/${t.nome}.csv`;
@@ -73,9 +95,10 @@ async function run() {
   }
 
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`✅ Transformações: ${executadas} executadas, ${erros} erros`);
+  const textoPuladas = puladas > 0 ? `, ${puladas} puladas` : '';
+  console.log(`✅ Transformações: ${executadas} executadas${textoPuladas}, ${erros} erros`);
 
-  return { executadas, erros };
+  return { executadas, erros, puladas, views };
 }
 
 if (require.main === module) {
