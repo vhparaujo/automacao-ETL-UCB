@@ -14,40 +14,59 @@ manual de: baixar CSVs pelo AVA → rodar SQL → atualizar PowerBI.
 
 ## Arquitetura do Sistema
 
+> O código em `src/` é a fonte da verdade. Se este arquivo divergir do código,
+> atualize a documentação — não "corrija" o código para bater com a doc.
+
 ```
-brightspace-etl/
+automacao-ETL-UCB/
 ├── CLAUDE.md                    ← este arquivo
+├── README.md
 ├── package.json
 ├── .env                         ← credenciais (nunca commitar)
 ├── .env.example                 ← template público
 ├── .gitignore
+├── load datas.sql               ← SQL legado de referência (migrado para queries/)
 │
 ├── src/
+│   ├── cli.js                   ← menu interativo (npm run cli)
+│   ├── pipeline.js              ← orquestra autenticação → BDS → ADS → carga → transformações
+│   │
 │   ├── auth/
-│   │   └── oauth.js             ← autenticação OAuth 2.0 (Authorization Code + Refresh Token)
+│   │   └── oauth.js             ← wrapper fino sobre o pacote brightspace-auth
 │   │
 │   ├── extractors/
-│   │   ├── bds.js               ← download dos 137 BDS (Brightspace Data Sets)
+│   │   ├── bds.js               ← download dos BDS (Brightspace Data Sets)
 │   │   └── ads.js               ← download dos ADS (Advanced Data Sets sob demanda)
 │   │
 │   ├── loader/
 │   │   └── mysql-loader.js      ← LOAD DATA LOCAL INFILE para cada CSV no MySQL
 │   │
 │   ├── transforms/
-│   │   ├── engine.js            ← executa as queries de transformação configuradas
-│   │   └── queries/             ← pasta com os arquivos .sql de transformação
-│   │       └── exemplo.sql      ← exemplo comentado
+│   │   ├── engine.js            ← executa as transformações de config/transforms.json
+│   │   └── queries/             ← arquivos .sql (export_users.sql, export_notas_finais.sql, …)
 │   │
 │   ├── exporter/
-│   │   ├── csv-exporter.js      ← exporta resultado de query para CSV
-│   │   └── powerbi.js           ← atualiza views MySQL usadas pelo PowerBI
+│   │   ├── csv-exporter.js      ← exporta resultado de query para CSV (streaming)
+│   │   └── powerbi.js           ← notificarViews(): loga as views atualizadas para o PowerBI
 │   │
-│   └── pipeline.js              ← orquestra extração → carga → transform → exportação
+│   └── utils/
+│       ├── versao-api.js        ← descobre a versão LP via /d2l/api/versions/ (ou LP_API_VERSION)
+│       ├── listar-roles.js      ← lista IDs de roles (npm run roles)
+│       ├── csv.js               ← parseLinhaCSV() RFC 4180 + nomes de coluna únicos (≤ 64 chars)
+│       ├── nomes.js             ← normalização de nomes (acentos/caixa/espaço/_/-) + encontrarSchema()
+│       ├── datas.js             ← datas relativas dos filtros ADS ("hoje", "-180d", "inicio_semestre"…)
+│       ├── bds-extracts.js      ← escolhe o extract BDS mais recente por CreatedDate
+│       └── falha-auth.js        ← detecta refresh token inválido e grava logs/ULTIMA_FALHA_AUTH.txt
 │
 ├── config/
-│   ├── ads-filters.json         ← filtros dos ADS (editável pelo usuário)
-│   ├── schedule.json            ← configuração do agendamento (editável)
-│   └── transforms.json          ← quais queries rodar e o que exportar (editável)
+│   ├── ads-filters.json         ← filtros dos ADS (editável)
+│   ├── bds-selecao.json         ← quais BDS baixar no modo automático (editável)
+│   ├── schemas.json             ← schemas fixos de tabelas (tipos, nome da tabela, aliases)
+│   ├── schedule.json            ← agendamento + etapas do pipeline (editável)
+│   ├── transforms.json          ← quais queries rodar e o que exportar (editável)
+│   └── roles.txt                ← referência de IDs de roles
+│
+├── test/                        ← testes unitários (node:test) — npm test
 │
 ├── csvs/                        ← CSVs baixados (gerado em runtime, ignorar no git)
 ├── exports/                     ← CSVs exportados tratados (gerado em runtime)
@@ -128,43 +147,53 @@ O Client ID e Client Secret gerados devem estar no `.env`.
 
 ### O que são
 
-São os 137 datasets gerados automaticamente pelo Brightspace toda madrugada.
+São os ~137 datasets gerados automaticamente pelo Brightspace toda madrugada.
 Não precisam de filtros — retornam dados de toda a instituição.
 
-### Endpoints BDS
+### Fluxo real (src/extractors/bds.js)
 
 ```
-# Listar todos os datasets disponíveis
-GET /d2l/api/lp/(version)/dataExport/bds/list
+# 1. Listar os datasets (scope datasets:bds:read, API LP 1.49+)
+GET /d2l/api/lp/(version)/datasets/bds
+# → ObjectListPage de BrightspaceDataSetInfo:
+#   { SchemaId, Full: { PluginId, Name, Description, ExtractsLink }, Differential: {...}, ExtractsLink }
+#   O código usa ds.Full.Name como nome e ds.Full.ExtractsLink para os extracts.
 
-# Obter detalhes + links de download de um dataset
-GET /d2l/api/lp/(version)/dataExport/bds/(pluginId)
+# 2. Listar os extracts do plugin Full (URL opaca vinda da resposta acima)
+GET ds.Full.ExtractsLink
+# → ObjectListPage de BrightspaceDataSetExtractInfo:
+#   { SchemaId, PluginId, BdsType, CreatedDate, QueuedForProcessingDate,
+#     DownloadSize, DownloadLink, Version }
 
-# Resposta inclui:
-# - Name: nome do dataset
-# - FullDatasetLink: { ExpiryDate, DownloadLink }  ← arquivo ZIP com CSV completo
-# - DifferentialDatasetLink: { ... }               ← apenas mudanças desde última extração
+# 3. Escolher o extract mais recente — selecionarExtractMaisRecente() (src/utils/bds-extracts.js)
+#    Ordena por CreatedDate desc (fallback QueuedForProcessingDate). A API não garante ordem.
+#    Se nenhum extract tiver data, usa o primeiro da lista e avisa UMA vez no log.
+
+# 4. Baixar o ZIP
+GET extract.DownloadLink
+# → 200 com o arquivo, ou 302 para URL pré-autenticada (redirects são seguidos;
+#   o Bearer só é enviado para hosts da UCB/Brightspace)
+
+# 5. Salvar em csvs/zips/, extrair os .csv para csvs/ e apagar o ZIP
 ```
 
-### Implementação do src/extractors/bds.js
+> Os endpoints antigos `/dataExport/bds/list`, `/dataExport/bds/(pluginId)`,
+> `FullDatasetLink` e `DifferentialDatasetLink` **não são usados**. Não migrar o código para eles.
 
-```javascript
-// Responsabilidades:
-// 1. Listar todos os 137 datasets via API
-// 2. Para cada dataset com FullDatasetLink disponível:
-//    a. Fazer GET no DownloadLink (retorna ZIP)
-//    b. Salvar o ZIP em csvs/zips/
-//    c. Extrair o CSV para csvs/
-//    d. Deletar o ZIP
-// 3. Mostrar progresso: "📥 [23/137] Users — 45.3 MB / 178.5 MB"
-// 4. Ao final: log com quantos baixados, quantos pulados, erros
+### Seleção dos datasets
 
-// ATENÇÃO: Alguns arquivos podem ter 100MB+. Usar stream (pipeline do node:stream)
-// para download — NÃO usar arrayBuffer() ou res.buffer() (estoura memória)
+- `download({ modo: 'auto' })` (pipeline): usa `config/bds-selecao.json`
+  (`todos: true` baixa tudo; senão, só os nomes em `automaticos`).
+- `modo: 'todos'` e `modo: 'selecao'` (`nomes: [...]`) são usados pela CLI.
+- O casamento de nomes é **normalizado** (`mesmoNome()` em `src/utils/nomes.js`):
+  ignora acentos, maiúsculas/minúsculas, espaços, `_` e `-` — `Usuarios` = `Usuários`.
 
-// Versão da API LP: usar '1.50' como padrão
-// Se retornar erro de versão, tentar '1.48', '1.47' em ordem decrescente
-```
+### Observações
+
+- Downloads grandes (100MB+): sempre `stream/promises.pipeline()` — nunca `arrayBuffer()`.
+- Log por dataset: tamanho, quantidade de CSVs e data do extract escolhido.
+- A versão LP vem de `obterVersaoLP()` (`src/utils/versao-api.js`): `LP_API_VERSION` do `.env`
+  ou a `LatestVersion` do produto `lp` em `GET /d2l/api/versions/` (cacheada por processo).
 
 ---
 
@@ -173,100 +202,126 @@ GET /d2l/api/lp/(version)/dataExport/bds/(pluginId)
 ### O que são
 
 Relatórios gerados **sob demanda** com filtros obrigatórios. Exemplos:
-- Uso do Instrutor
+- Uso do instrutor
 - Uso do Aluno
-- Notas Finais
+- Notas finais
 
-### Endpoints ADS
+### Fluxo real (src/extractors/ads.js)
 
 ```
-# Listar relatórios ADS disponíveis
+# 1. Listar relatórios ADS disponíveis e achar o DataSetId pelo nome (case-insensitive)
 GET /d2l/api/lp/(version)/dataExport/list
 
-# Criar um job de exportação (POST com filtros)
+# 2. Criar o job de exportação
 POST /d2l/api/lp/(version)/dataExport/create
 Body: {
   "DataSetId": "...",
   "Filters": [
-    { "Name": "startDate", "Value": "2025-01-01T00:00:00.000Z" },
-    { "Name": "endDate",   "Value": "2025-12-31T23:59:59.999Z" },
+    { "Name": "startDate",       "Value": "2026-01-01T00:00:00.000Z" },  ← UTC com Z (offset → 400)
+    { "Name": "endDate",         "Value": "2026-06-30T23:59:59.999Z" },
     { "Name": "parentOrgUnitId", "Value": "6606" },
-    { "Name": "roles",     "Value": "110,115" }  ← IDs numéricos, não texto!
+    { "Name": "roles",           "Value": "110,115" }                    ← IDs numéricos, não texto!
   ]
 }
+# → { ExportJobId, ... }
 
-# Verificar status do job
+# 3. Polling com HEAD a cada 10s (timeout 30 min)
+HEAD /d2l/api/lp/(version)/dataExport/download/(exportJobId)
+#   404 = ainda processando
+#   200 = pronto
+#   outro status = erro
+
+# 4. Download do ZIP (mesma URL, GET) → extrai o CSV como csvs/<nome_normalizado>.csv
 GET /d2l/api/lp/(version)/dataExport/download/(exportJobId)
-# Status possíveis: Queued, Processing, Complete, Error
-
-# Quando Complete, a resposta inclui a URL de download
 ```
+
+Todas as chaves do relatório em `ads-filters.json`, exceto `ativo` e `automatico`, viram
+`Filters` (arrays são unidos por vírgula).
 
 ### Arquivo de configuração: config/ads-filters.json
 
 ```json
 {
-  "_instrucoes": "Configure os filtros para cada relatório ADS. Roles devem ser IDs numéricos.",
-  "_como_obter_role_ids": "No Brightspace, vá em Admin > Roles e anote o ID de cada role",
-  
+  "_instrucoes": "...",
   "Uso do instrutor": {
+    "automatico": true,
     "ativo": true,
     "parentOrgUnitId": "6606",
-    "startDate": "2025-01-01T00:00:00.000Z",
-    "endDate": "2025-12-31T23:59:59.999Z",
-    "roles": ["109", "110", "115"]
-  },
-  "Uso do aluno": {
-    "ativo": true,
-    "parentOrgUnitId": "6606",
-    "startDate": "2025-01-01T00:00:00.000Z",
-    "endDate": "2025-12-31T23:59:59.999Z",
-    "roles": ["112"]
+    "startDate": "inicio_semestre",
+    "endDate": "hoje",
+    "roles": ["109"]
   }
 }
 ```
 
-### Implementação do src/extractors/ads.js
+- `automatico: true` → roda no pipeline agendado; `false` → só sob demanda (CLI).
+- `ativo: false` → ignorado em todos os modos.
 
-```javascript
-// Responsabilidades:
-// 1. Ler config/ads-filters.json
-// 2. Para cada relatório onde ativo=true:
-//    a. Criar job via POST /dataExport/create
-//    b. Fazer polling do status a cada 30s (timeout: 30 minutos)
-//    c. Quando Complete: baixar e extrair para csvs/
-// 3. Logar progresso e erros
-// 4. roles: SEMPRE enviar como IDs numéricos. Documentar isso claramente.
-//    A API rejeita strings como "Professor" com erro 400.
-```
+#### Datas relativas (`startDate` / `endDate`)
+
+Resolvidas em `processarJob()` no momento da execução por `resolverPeriodo()`
+(`src/utils/datas.js`), sempre em ISO UTC com `Z`. O log mostra o período efetivo:
+`📅 Período: 2026-07-01T00:00:00.000Z → 2026-12-31T23:59:59.999Z`.
+
+| Valor | startDate | endDate |
+|-------|-----------|---------|
+| ISO com `Z` (ex.: `2026-01-01T00:00:00.000Z`) | mantido como está | mantido como está |
+| ISO com offset (`…-03:00`) | convertido para UTC/`Z` | convertido para UTC/`Z` |
+| `hoje` | hoje 00:00:00.000Z | hoje 23:59:59.999Z |
+| `-Nd` (ex.: `-180d`) | N dias atrás, 00:00:00.000Z | N dias atrás, 23:59:59.999Z |
+| `inicio_ano` / `fim_ano` | 01/01 00:00:00.000Z | 31/12 23:59:59.999Z |
+| `inicio_semestre` / `fim_semestre` | 01/01 ou 01/07 | 30/06 ou 31/12 |
+
+- Semestre 1 = jan–jun, semestre 2 = jul–dez. O "dia" é o dia UTC (o cron das 3h de Brasília
+  roda às 06:00 UTC, mesmo dia).
+- Expressão inválida ou período invertido → erro só naquele relatório; os demais continuam.
+- Configs antigas (datas ISO absolutas) continuam funcionando sem alteração.
+
+### Roles
+
+SEMPRE IDs numéricos (`npm run roles` lista os disponíveis). A API rejeita
+strings como "Professor" com erro 400.
 
 ---
 
 ## Fase 4 — Carga no MySQL
 
-### Implementação do src/loader/mysql-loader.js
+### src/loader/mysql-loader.js
 
 ```javascript
-// Responsabilidades:
-// 1. Ler config/transforms.json para saber quais tabelas criar/atualizar
-// 2. Para cada CSV em csvs/:
-//    a. Criar a tabela se não existir (schema inferido ou definido no config)
-//    b. TRUNCATE TABLE antes de inserir (dados completos, não incrementais)
-//    c. LOAD DATA LOCAL INFILE 'csvs/NomeArquivo.csv'
-//       INTO TABLE nome_tabela
-//       FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
-//       LINES TERMINATED BY '\n'
-//       IGNORE 1 ROWS  ← pular cabeçalho
-//       (col1, col2, @col3, ...) SET col3 = NULLIF(@col3, '')
-// 3. Log: tabela carregada, quantidade de linhas, tempo
-
-// ATENÇÃO: Usar mysql2 com allowLocalInfile: true na conexão
-// ATENÇÃO: O servidor MySQL também precisa ter local_infile=ON
-//          Documentar como habilitar: SET GLOBAL local_infile = 1;
-
-// Configuração de conexão via .env:
-// DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+// Para cada CSV em csvs/:
+// 1. Lê o cabeçalho com parseLinhaCSV() (src/utils/csv.js) — RFC 4180: vírgulas entre aspas,
+//    "" como aspa literal, remove BOM e \r final.
+// 2. Procura schema fixo em config/schemas.json com encontrarSchema() (src/utils/nomes.js):
+//    chave exata → chave normalizada → "aliases" normalizados.
+//    a. Com schema: DROP + CREATE TABLE com as colunas/tipos do schema (colunas extras do CSV
+//       são ignoradas); nome da tabela = "tabela" do schema.
+//    b. Sem schema: loga "⚠️  Sem schema fixo para "<arquivo>" — usando inferência de tipos",
+//       infere tipos pelo nome da coluna, trunca nomes para 64 chars e desambigua colisões
+//       com _2, _3… (aviso no log); CREATE TABLE IF NOT EXISTS + TRUNCATE.
+// 3. LOAD DATA LOCAL INFILE com variáveis posicionais (@col_0, @col_1, …) e
+//    SET coluna = NULLIF(@col_N, '').
+// 4. Log: tabela, linhas, tempo (📋 = schema fixo, 🔍 = inferido).
+//
+// Conexão mysql2 usa infileStreamFactory (habilita LOCAL INFILE no cliente).
+// Servidor precisa de local_infile=ON: SET GLOBAL local_infile = 1;
+// Conexão via .env: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 ```
+
+### config/schemas.json
+
+```json
+"Users": {
+  "tabela": "users",
+  "aliases": ["Usuários"],
+  "colunas": { "UserId": "INT", "UserName": "VARCHAR(255)" }
+}
+```
+
+- Chave = nome do CSV sem extensão. `aliases` (opcional) = outros nomes possíveis do arquivo
+  (ex.: em português). Casamento ignora acentos, caixa, espaços, `_` e `-`.
+- Entradas sem `aliases` continuam funcionando como antes (casamento exato ou normalizado).
+- Para adicionar um alias: veja o nome real do CSV em `csvs/` e inclua em `aliases`.
 
 ---
 
@@ -306,17 +361,16 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 ### Implementação do src/transforms/engine.js
 
 ```javascript
-// Responsabilidades:
-// 1. Ler config/transforms.json
+// run({ exportarCsvs }) → { executadas, erros, puladas, views }
+// 1. Lê config/transforms.json
 // 2. Para cada transformação ativa, em ordem:
-//    a. Se tipo === "view": executar CREATE OR REPLACE VIEW ...
-//    b. Se tipo === "exportar_csv": executar a query e chamar csv-exporter.js
-//    c. Se tipo === "table": executar CREATE TABLE AS SELECT ...
-// 3. As queries SQL ficam em arquivos .sql separados (fáceis de editar)
-// 4. Log de cada transformação executada
-
-// IMPORTANTE: O usuário deve poder adicionar seus próprios .sql sem mexer no código.
-// Basta criar o arquivo e adicionar ao config/transforms.json
+//    a. "view":         executa o .sql (CREATE OR REPLACE VIEW …) e registra o nome em views
+//    b. "exportar_csv": executa a query e grava CSV via csv-exporter.js
+//                       — PULADA quando exportarCsvs = false ("⏭️  pulada (exportar_csvs = false)")
+//    c. "table":        executa o .sql (CREATE TABLE … AS SELECT …)
+// 3. exportarCsvs omitido → lê pipeline.exportar_csvs de config/schedule.json (padrão true)
+//
+// O usuário adiciona .sql sem mexer no código: cria o arquivo e registra em config/transforms.json.
 ```
 
 ---
@@ -326,19 +380,16 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 ### src/exporter/csv-exporter.js
 
 ```javascript
-// Executa uma query SQL e grava resultado como CSV em exports/
-// Usar biblioteca 'csv-stringify' para gerar o CSV com cabeçalho
-// Nome do arquivo: configurado em transforms.json ou gerado com timestamp
+// exportarQuery(): executa a query via streaming (mysql2 raw) e grava CSV com cabeçalho
+// (csv-stringify). Chamado pelo engine nas transformações "exportar_csv".
+// exportarTodos(): usado apenas ao rodar o arquivo diretamente (node src/exporter/csv-exporter.js).
 ```
 
 ### src/exporter/powerbi.js
 
 ```javascript
-// PowerBI conecta diretamente ao MySQL via connector nativo ou gateway.
-// Este módulo garante que as VIEWS estejam atualizadas após a carga.
-// Ação: depois de cada transformação tipo "view", executar REFRESH ou apenas
-// garantir que CREATE OR REPLACE VIEW foi executado com sucesso.
-// Logar: "✅ View 'view_alunos_ativos' atualizada — PowerBI pode sincronizar"
+// notificarViews(views): chamado pelo pipeline após as transformações, com os nomes das
+// views atualizadas com sucesso. Loga: "✅ View 'x' atualizada — PowerBI pode sincronizar"
 ```
 
 ---
@@ -374,21 +425,26 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 ### src/pipeline.js
 
 ```javascript
-// Orquestra todo o pipeline em sequência:
-// 1. auth.getAccessToken() → valida/renova autenticação
-// 2. bds.download()        → baixa os 137 BDS
-// 3. ads.download()        → baixa os ADS configurados
-// 4. mysqlLoader.load()    → carrega todos os CSVs no MySQL
-// 5. engine.run()          → executa transformações
-// 6. exporter.exportAll()  → gera CSVs de saída
-// 7. Log final com resumo: duração total, arquivos processados, erros
-
-// Também deve ser executável manualmente:
-// node src/pipeline.js               → roda tudo agora
-// node src/pipeline.js --apenas-bds  → só baixa BDS
-// node src/pipeline.js --apenas-ads  → só baixa ADS
-// node src/pipeline.js --apenas-load → só carrega no MySQL
+// Orquestra em sequência (cada etapa respeita as flags de config/schedule.json → pipeline):
+// 1. getAccessToken()          → valida/renova autenticação
+//    • Refresh token inválido/expirado (erros do brightspace-auth, invalid_grant, HTTP 400/401):
+//      loga "🔐 Refresh token inválido ou expirado — rode "npm run setup" para reautenticar",
+//      grava logs/ULTIMA_FALHA_AUTH.txt e ENCERRA sem as etapas seguintes (exit code 1 manual).
+//    • Sucesso: remove logs/ULTIMA_FALHA_AUTH.txt se existir.
+// 2. bds.download()            → baixar_bds
+// 3. ads.download()            → baixar_ads
+// 4. load()                    → carregar_mysql
+// 5. engine.run({ exportarCsvs }) → executar_transformacoes (+ exportar_csvs)
+// 6. notificarViews(views)     → loga views prontas para o PowerBI
+// 7. Resumo: duração, datasets, tabelas, transformações executadas/puladas, erros
+//
+// Execução manual:
+// node src/pipeline.js                    → roda tudo agora
+// node src/pipeline.js --apenas-bds       → só baixa BDS
+// node src/pipeline.js --apenas-ads       → só baixa ADS
+// node src/pipeline.js --apenas-load      → só carrega no MySQL
 // node src/pipeline.js --apenas-transform → só transforma
+// node src/pipeline.js --watch            → agendamento com node-cron (npm start)
 ```
 
 ---
@@ -472,7 +528,7 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 
 ### Etapa 6 — Transformações
 - [ ] Implementar `src/transforms/engine.js`
-- [ ] Criar `src/transforms/queries/exemplo.sql` como modelo comentado
+- [ ] Usar as queries de `src/transforms/queries/` (migradas de `load datas.sql`) como modelo
 - [ ] Testar: executar uma query de exemplo e verificar resultado
 
 ### Etapa 7 — Exportação
@@ -498,17 +554,24 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 ## Pontos de Atenção Críticos
 
 ### API Brightspace
+- **Endpoints chamados pelo código** (lista completa):
+  `GET /d2l/api/versions/` (versao-api.js) · `GET /d2l/api/lp/(v)/datasets/bds` + `Full.ExtractsLink` +
+  `DownloadLink` (bds.js) · `GET /dataExport/list`, `POST /dataExport/create`,
+  `HEAD`/`GET /dataExport/download/(jobId)` (ads.js) · `GET /d2l/api/lp/(v)/roles/` (listar-roles.js) ·
+  `GET /d2l/api/lp/(v)/users/whoami` (oauth.js --test). Tokens: `auth.brightspace.com` (pacote brightspace-auth).
 - **Roles devem ser IDs numéricos** — nunca texto ("Professor", "Aluno"). Erro 400 se texto.
 - **POST requests exigem header `X-Csrf-Token`** — obtido via cookie ou endpoint dedicado.
   Com OAuth2 e Bearer token, esse requisito muda: verificar se o CSRF ainda é necessário
   com Authorization header. Testar e documentar comportamento real.
-- **Versão da API LP:** tentar `1.50`, fallback para `1.48`, `1.47`.
+- **Versão da API LP:** descoberta via `GET /d2l/api/versions/` (`src/utils/versao-api.js`);
+  force com `LP_API_VERSION` no `.env` se necessário.
+- **Datas nos filtros ADS:** sempre UTC com `Z` (offset `-03:00` causa 400).
 - **Downloads grandes (>100MB):** sempre usar `stream.pipeline()` do Node.js nativo.
   Nunca `response.arrayBuffer()` ou `response.buffer()`.
 
 ### MySQL
 - Habilitar `local_infile`: `SET GLOBAL local_infile = 1;`
-- Na conexão mysql2: `{ allowLocalInfile: true }`
+- Na conexão mysql2: `infileStreamFactory` (habilita LOCAL INFILE no cliente)
 - `TRUNCATE TABLE` antes de cada `LOAD DATA` (dados são sempre completos do BDS)
 - Tratar valores nulos: `SET coluna = NULLIF(@coluna, '')`
 
@@ -521,6 +584,7 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 - Cada execução do pipeline gera arquivo em `logs/pipeline-YYYY-MM-DD.log`
 - Formato: `[HH:MM:SS] [NIVEL] mensagem`
 - Ao final do pipeline: resumo com duração, datasets baixados, tabelas carregadas, erros
+- Falha de autenticação: `logs/ULTIMA_FALHA_AUTH.txt` (a CLI [7] mostra alerta enquanto existir)
 
 ---
 
@@ -572,9 +636,20 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   "ads":       "node src/pipeline.js --apenas-ads",
   "load":      "node src/pipeline.js --apenas-load",
   "transform": "node src/pipeline.js --apenas-transform",
-  "cli":       "node src/cli.js"
+  "cli":       "node src/cli.js",
+  "roles":     "node src/utils/listar-roles.js",
+  "test-auth": "node src/auth/oauth.js --test",
+  "test":      "node --test"
 }
 ```
+
+## Testes
+
+- `npm test` roda `node --test`, que descobre `test/**/*.test.js` (sem dependências extras).
+  Usa-se `node --test` sem argumento de diretório porque `node --test test/` quebra no Node 22+.
+- Os testes não acessam MySQL nem Brightspace: módulos externos são mockados via `require.cache`.
+- Funções puras testadas: `src/utils/csv.js`, `nomes.js`, `datas.js`, `bds-extracts.js`,
+  `falha-auth.js`; `engine.run()` e o tratamento de falha de auth do pipeline com mocks.
 
 ---
 

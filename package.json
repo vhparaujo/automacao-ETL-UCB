@@ -13,7 +13,8 @@
     "transform": "node src/pipeline.js --apenas-transform",
     "cli": "node src/cli.js",
     "roles": "node src/utils/listar-roles.js",
-    "test-auth": "node src/auth/oauth.js --test"
+    "test-auth": "node src/auth/oauth.js --test",
+    "test": "node --test"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",

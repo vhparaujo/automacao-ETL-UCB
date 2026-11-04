@@ -88,7 +88,7 @@ npm run cli
 
 Verifica se o `.env` existe e guia o usuário pelo fluxo de autorização OAuth 2.0. Exibe os scopes necessários antes de abrir o navegador.
 
-**Quando usar:** primeiro uso ou quando o refresh token expirar.
+**Quando usar:** primeiro uso ou quando o refresh token expirar. Se o refresh token for revogado/expirar, o pipeline (inclusive o agendado) para logo na autenticação com a mensagem `🔐 Refresh token inválido ou expirado — rode "npm run setup" para reautenticar` e grava `logs/ULTIMA_FALHA_AUTH.txt`; o arquivo é removido automaticamente na próxima autenticação bem-sucedida.
 
 ---
 
@@ -98,7 +98,7 @@ Submenu com 3 opções:
 
 **[1] BDS — editar lista de downloads automáticos**
 - Alterna entre baixar **todos os 137 datasets** ou uma **lista personalizada**
-- Adiciona ou remove datasets da lista automática pelo nome exato (ex: `Users`, `Enrollments`)
+- Adiciona ou remove datasets da lista automática pelo nome (ex: `Usuários`, `Users`). A comparação ignora acentos, maiúsculas/minúsculas, espaços, `_` e `-` — `Usuarios` e `Usuários` são o mesmo dataset
 
 **[2] ADS — ativar/desativar relatórios automáticos**
 - Lista todos os relatórios ADS configurados
@@ -106,6 +106,7 @@ Submenu com 3 opções:
 
 **[3] Adicionar novo relatório ADS**
 - Solicita: nome do relatório (como aparece no Brightspace), OrgUnitId, período (data início/fim), IDs das roles
+- As datas aceitam `YYYY-MM-DD` ou expressões relativas (`hoje`, `-180d`, `inicio_semestre`…) — ver [Datas relativas nos filtros ADS](#datas-relativas-nos-filtros-ads)
 - Pergunta se deve rodar automaticamente no pipeline
 - Salva em `config/ads-filters.json`
 
@@ -153,6 +154,8 @@ Executa o pipeline manualmente, sem esperar o agendamento:
 | [4] Apenas carga MySQL | `npm run load` | Carrega os CSVs já baixados no MySQL |
 | [5] Apenas transformações | `npm run transform` | Executa as queries SQL configuradas |
 
+As etapas executadas no pipeline completo seguem `pipeline` em `config/schedule.json`. Com `"exportar_csvs": false`, as transformações do tipo `exportar_csv` são puladas (`⏭️  pulada (exportar_csvs = false)`), enquanto `view` e `table` continuam rodando; o resumo final mostra quantas foram puladas. Ao final das transformações, o pipeline lista as views atualizadas para o PowerBI.
+
 ---
 
 ### [6] Download sob demanda
@@ -178,6 +181,8 @@ Baixa dados específicos sem alterar as configurações de automação:
 
 Exibe as últimas 50 linhas do log mais recente em `logs/`. Útil para verificar erros após uma execução.
 
+Se existir `logs/ULTIMA_FALHA_AUTH.txt`, mostra antes um alerta destacado de que a última execução falhou na autenticação e é preciso rodar `npm run setup`.
+
 ---
 
 ## Comandos npm diretos
@@ -193,6 +198,7 @@ npm run transform   # Executar transformações SQL
 npm run start       # Iniciar com agendamento automático (modo watch)
 npm run roles       # Listar IDs das roles disponíveis no Brightspace
 npm run test-auth   # Testar se a autenticação está funcionando
+npm test            # Rodar os testes unitários (node:test, sem MySQL/Brightspace)
 ```
 
 ---
@@ -204,8 +210,55 @@ npm run test-auth   # Testar se a autenticação está funcionando
 | `.env` | Credenciais (nunca commitar) |
 | `config/ads-filters.json` | Filtros e configurações dos relatórios ADS |
 | `config/bds-selecao.json` | Lista de BDS para download automático |
-| `config/schedule.json` | Cron e configurações do agendamento |
+| `config/schemas.json` | Schemas fixos das tabelas (tipos, nome da tabela, `aliases`) |
+| `config/schedule.json` | Cron, agendamento e etapas do pipeline (`exportar_csvs` etc.) |
 | `config/transforms.json` | Transformações SQL a executar |
+
+### Datas relativas nos filtros ADS
+
+Em `config/ads-filters.json`, `startDate` e `endDate` aceitam datas ISO em UTC (`2026-01-01T00:00:00.000Z`, como antes) **ou** expressões relativas, recalculadas a cada execução — assim os relatórios agendados não ficam presos a um período fixo:
+
+| Valor | `startDate` | `endDate` |
+|-------|-------------|-----------|
+| `hoje` | hoje 00:00:00.000Z | hoje 23:59:59.999Z |
+| `-Nd` (ex.: `-180d`) | N dias atrás, 00:00:00.000Z | N dias atrás, 23:59:59.999Z |
+| `inicio_ano` / `fim_ano` | 01/01 do ano corrente | 31/12 do ano corrente |
+| `inicio_semestre` / `fim_semestre` | 01/01 ou 01/07 | 30/06 ou 31/12 |
+
+Semestre 1 = jan–jun, semestre 2 = jul–dez. As datas são sempre enviadas à API em UTC com `Z` (offsets como `-03:00` causam erro 400). O log mostra o período efetivo de cada relatório:
+
+```
+📅 Período: 2026-07-01T00:00:00.000Z → 2026-12-31T23:59:59.999Z
+```
+
+Exemplo:
+
+```json
+"Uso do instrutor": {
+  "automatico": true,
+  "ativo": true,
+  "parentOrgUnitId": "6606",
+  "startDate": "inicio_semestre",
+  "endDate": "hoje",
+  "roles": ["109"]
+}
+```
+
+Expressão inválida (ou início depois do fim) gera erro apenas naquele relatório; os demais continuam.
+
+### Schemas fixos e aliases
+
+O loader procura em `config/schemas.json` um schema para cada CSV pelo nome do arquivo (sem `.csv`). A comparação ignora acentos, maiúsculas/minúsculas, espaços, `_` e `-`, e também considera o campo opcional `aliases`:
+
+```json
+"Users": {
+  "tabela": "users",
+  "aliases": ["Usuários"],
+  "colunas": { "UserId": "INT", "UserName": "VARCHAR(255)" }
+}
+```
+
+Quando um CSV não casa com nenhum schema, o log avisa `⚠️  Sem schema fixo para "<arquivo>" — usando inferência de tipos`. Para corrigir, veja o nome real do arquivo em `csvs/` e adicione-o em `aliases` da entrada correspondente. Entradas sem `aliases` continuam funcionando como antes.
 
 ---
 
@@ -215,6 +268,7 @@ npm run test-auth   # Testar se a autenticação está funcionando
 csvs/       ← CSVs baixados do Brightspace
 exports/    ← CSVs exportados após transformação
 logs/       ← Logs de cada execução (pipeline-YYYY-MM-DD.log)
+              e ULTIMA_FALHA_AUTH.txt quando a autenticação falhar
 ```
 
 ---
