@@ -25,6 +25,7 @@ automacao-ETL-UCB/
 ├── .env                         ← credenciais (nunca commitar)
 ├── .env.example                 ← template público
 ├── .gitignore
+├── docker-compose.yml           ← MySQL 8.4 (container etl-ucb-mysql, 127.0.0.1:3307, local_infile=ON)
 ├── load datas.sql               ← SQL legado de referência (migrado para queries/)
 │
 ├── src/
@@ -570,7 +571,10 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
   Nunca `response.arrayBuffer()` ou `response.buffer()`.
 
 ### MySQL
-- Habilitar `local_infile`: `SET GLOBAL local_infile = 1;`
+- Roda em Docker: `docker-compose.yml` → container `etl-ucb-mysql`, volume `etl-ucb-mysql-data`,
+  porta `127.0.0.1:${DB_PORT}` (3307). Credenciais do `.env`; root com senha aleatória (não usada).
+  `npm run db:up` / `db:down` / `db:logs`. O Docker Desktop precisa estar aberto no horário do cron.
+- `local_infile` já vem ON no container (`--local-infile=1`). Fora do Docker: `SET GLOBAL local_infile = 1;`
 - Na conexão mysql2: `infileStreamFactory` (habilita LOCAL INFILE no cliente)
 - `TRUNCATE TABLE` antes de cada `LOAD DATA` (dados são sempre completos do BDS)
 - Tratar valores nulos: `SET coluna = NULLIF(@coluna, '')`
@@ -639,7 +643,10 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   "cli":       "node src/cli.js",
   "roles":     "node src/utils/listar-roles.js",
   "test-auth": "node src/auth/oauth.js --test",
-  "test":      "node --test"
+  "test":      "node --test",
+  "db:up":     "docker compose up -d --wait",
+  "db:down":   "docker compose stop",
+  "db:logs":   "docker compose logs -f mysql"
 }
 ```
 

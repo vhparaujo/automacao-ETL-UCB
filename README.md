@@ -27,13 +27,19 @@ cp .env.example .env
 # edite .env com suas credenciais do Brightspace e MySQL
 ```
 
-### Pré-requisitos MySQL
+### MySQL (Docker)
 
-Habilitar leitura de arquivos locais no MySQL:
+O MySQL roda num container definido em `docker-compose.yml` (MySQL 8.4, `local_infile` já habilitado, utf8mb4). Com o Docker Desktop aberto:
 
-```sql
-SET GLOBAL local_infile = 1;
+```bash
+npm run db:up     # cria/sobe o container etl-ucb-mysql em 127.0.0.1:3307 e espera ficar saudável
+npm run db:down   # para o container (os dados ficam no volume etl-ucb-mysql-data)
+npm run db:logs   # acompanha o log do MySQL
 ```
+
+O banco, o usuário e a senha vêm do `.env` (`DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`) e são criados na primeira inicialização. A porta só aceita conexões da própria máquina. O container tem `restart: unless-stopped`, então volta sozinho quando o Docker Desktop abre — mas o Docker Desktop precisa estar aberto no horário do agendamento.
+
+> Mudar `DB_USER`/`DB_PASSWORD` depois da primeira inicialização não altera o usuário já criado no volume. Para recriar do zero: `docker compose down -v` (**apaga os dados**) e `npm run db:up`; depois rode `npm run load` para recarregar os CSVs.
 
 ---
 
@@ -199,6 +205,9 @@ npm run start       # Iniciar com agendamento automático (modo watch)
 npm run roles       # Listar IDs das roles disponíveis no Brightspace
 npm run test-auth   # Testar se a autenticação está funcionando
 npm test            # Rodar os testes unitários (node:test, sem MySQL/Brightspace)
+npm run db:up       # Subir o MySQL (Docker)
+npm run db:down     # Parar o MySQL (Docker)
+npm run db:logs     # Log do MySQL (Docker)
 ```
 
 ---
