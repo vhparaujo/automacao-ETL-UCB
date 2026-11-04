@@ -6,6 +6,7 @@ const path = require('node:path');
 const readline = require('node:readline');
 const mysql = require('mysql2/promise');
 const { parseLinhaCSV, nomesColunasUnicos } = require('../utils/csv');
+const { encontrarSchema } = require('../utils/nomes');
 
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 
@@ -46,11 +47,10 @@ function nomeCsvBase(csvPath) {
   return path.basename(csvPath, '.csv');
 }
 
-function nomeTabela(csvPath, schemas) {
-  const base = nomeCsvBase(csvPath);
-  const schema = schemas[base];
-  if (schema?.tabela) return schema.tabela;
-  return base.toLowerCase().replace(/[^a-z0-9]/g, '_');
+// Nome da tabela: o definido no schema fixo, ou derivado do nome do arquivo
+function nomeTabela(csvPath, schemaEntry) {
+  if (schemaEntry?.tabela) return schemaEntry.tabela;
+  return nomeCsvBase(csvPath).toLowerCase().replace(/[^a-z0-9]/g, '_');
 }
 
 function tipoColuna(nome) {
@@ -86,11 +86,16 @@ async function criarOuRecriarTabela(conn, tabela, colunas, schemaFixo) {
 
 async function carregarCSV(conn, csvPath, schemas) {
   const base = nomeCsvBase(csvPath);
-  const schemaEntry = schemas[base];
-  const tabela = nomeTabela(csvPath, schemas);
+  // Casamento normalizado (sem acento/case, ignora espaço, _ e -) + "aliases" do schemas.json
+  const schemaEntry = encontrarSchema(base, schemas)?.schema;
+  const tabela = nomeTabela(csvPath, schemaEntry);
   const colunas = await lerCabecalhoCSV(csvPath);
   const absPath = path.resolve(csvPath).replace(/\\/g, '/');
   const avisos = [];
+
+  if (!schemaEntry) {
+    avisos.push(`⚠️  Sem schema fixo para "${path.basename(csvPath)}" — usando inferência de tipos`);
+  }
 
   // Sem schema fixo: trunca para 64 chars (limite do MySQL) e desambigua colisões
   const { nomes: nomesInferidos, colisoes } = nomesColunasUnicos(colunas);

@@ -1,8 +1,9 @@
 {
-  "_instrucoes": "Schemas fixos para tabelas conhecidas. O loader usa estes ao invés de auto-inferir. Chave = nome do CSV (sem extensão).",
+  "_instrucoes": "Schemas fixos para tabelas conhecidas. O loader usa estes ao invés de auto-inferir. Chave = nome do CSV (sem extensão). Opcional: \"aliases\": [\"Nome alternativo\", ...] em cada entrada, com outros nomes que o arquivo CSV pode ter (ex.: em português). O casamento ignora acentos, maiúsculas/minúsculas, espaços, '_' e '-' (\"Unidades_organizacionais\" casa com \"Unidades organizacionais\"). Se um CSV não casar com nenhuma chave nem alias, o loader avisa no log e usa inferência de tipos. Para adicionar: veja o nome do CSV em csvs/ e inclua-o em aliases da entrada correspondente.",
 
   "Users": {
     "tabela": "users",
+    "aliases": ["Usuários"],
     "colunas": {
       "UserId":         "INT",
       "UserName":       "VARCHAR(255)",
@@ -23,6 +24,7 @@
 
   "OrganizationalUnits": {
     "tabela": "organizationalunits",
+    "aliases": ["Unidades organizacionais"],
     "colunas": {
       "OrgUnitId":      "INT",
       "Organization":   "VARCHAR(255)",
@@ -43,6 +45,7 @@
 
   "GradeObjects": {
     "tabela": "gradeobjects",
+    "aliases": ["Objetos de nota"],
     "colunas": {
       "GradeObjectId":              "INT",
       "OrgUnitId":                  "INT",
@@ -178,6 +181,7 @@
 
   "DiscussionPosts": {
     "tabela": "discussionposts",
+    "aliases": ["Posts de discussão"],
     "colunas": {
       "OrgUnitId":       "INT",
       "TopicId":         "INT",

@@ -8,6 +8,7 @@ const { pipeline } = require('node:stream/promises');
 const AdmZip = require('adm-zip');
 const { getAccessToken } = require('../auth/oauth');
 const { obterVersaoLP } = require('../utils/versao-api');
+const { mesmoNome } = require('../utils/nomes');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -127,7 +128,7 @@ async function download(opcoes = {}) {
     selecionados = todosDatasets;
   } else if (modo === 'selecao' && opcoes.nomes?.length > 0) {
     selecionados = todosDatasets.filter((ds) =>
-      opcoes.nomes.some((n) => (ds.Full?.Name || '').toLowerCase() === n.toLowerCase())
+      opcoes.nomes.some((n) => mesmoNome(ds.Full?.Name || '', n))
     );
   } else {
     // modo 'auto': filtra pelos nomes do config
@@ -135,9 +136,10 @@ async function download(opcoes = {}) {
     if (config.todos === true) {
       selecionados = todosDatasets;
     } else {
-      const automaticos = (config.automaticos || []).map((n) => n.toLowerCase());
+      // Comparação normalizada: "Usuarios" e "Usuários" são o mesmo dataset
+      const automaticos = config.automaticos || [];
       selecionados = todosDatasets.filter((ds) =>
-        automaticos.includes((ds.Full?.Name || '').toLowerCase())
+        automaticos.some((n) => mesmoNome(ds.Full?.Name || '', n))
       );
     }
   }
