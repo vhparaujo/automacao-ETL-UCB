@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const mysql = require('mysql2/promise');
+const { parseLinhaCSV, nomesColunasUnicos } = require('../utils/csv');
 
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 
@@ -34,10 +35,8 @@ async function lerCabecalhoCSV(csvPath) {
     const rl = readline.createInterface({ input: fs.createReadStream(csvPath), crlfDelay: Infinity });
     rl.once('line', (linha) => {
       rl.close();
-      // Remove BOM se presente
-      const limpada = linha.replace(/^﻿/, '');
-      const colunas = limpada.split(',').map((c) => c.replace(/^"|"$/g, '').trim());
-      resolve(colunas);
+      // parseLinhaCSV remove BOM e \r final e respeita campos entre aspas (RFC 4180)
+      resolve(parseLinhaCSV(linha));
     });
     rl.on('error', reject);
   });
@@ -74,9 +73,9 @@ async function criarOuRecriarTabela(conn, tabela, colunas, schemaFixo) {
       `CREATE TABLE \`${tabela}\` (\n  ${definicoes}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
     );
   } else {
-    // Trunca nomes de coluna para respeitar o limite de 64 chars do MySQL
+    // Nomes já chegam truncados (64 chars) e sem duplicatas — ver nomesColunasUnicos()
     const definicoes = colunas
-      .map((c) => `\`${c.substring(0, 64)}\` ${tipoColuna(c)}`)
+      .map((c) => `\`${c}\` ${tipoColuna(c)}`)
       .join(',\n  ');
     await conn.execute(
       `CREATE TABLE IF NOT EXISTS \`${tabela}\` (\n  ${definicoes}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
@@ -91,8 +90,17 @@ async function carregarCSV(conn, csvPath, schemas) {
   const tabela = nomeTabela(csvPath, schemas);
   const colunas = await lerCabecalhoCSV(csvPath);
   const absPath = path.resolve(csvPath).replace(/\\/g, '/');
+  const avisos = [];
 
-  await criarOuRecriarTabela(conn, tabela, colunas, schemaEntry?.colunas);
+  // Sem schema fixo: trunca para 64 chars (limite do MySQL) e desambigua colisões
+  const { nomes: nomesInferidos, colisoes } = nomesColunasUnicos(colunas);
+  if (!schemaEntry?.colunas) {
+    for (const { original, final } of colisoes) {
+      avisos.push(`⚠️  Coluna duplicada após truncamento: "${original}" → "${final}"`);
+    }
+  }
+
+  await criarOuRecriarTabela(conn, tabela, schemaEntry?.colunas ? colunas : nomesInferidos, schemaEntry?.colunas);
 
   // Variáveis posicionais evitam o limite de 64 chars do MySQL em nomes de identificadores
   const vars = colunas.map((_, i) => `@col_${i}`).join(', ');
@@ -102,8 +110,8 @@ async function carregarCSV(conn, csvPath, schemas) {
         .map((c, i) => (schemaEntry.colunas[c] !== undefined ? `\`${c}\` = NULLIF(@col_${i}, '')` : null))
         .filter(Boolean)
         .join(',\n  ')
-    : colunas
-        .map((c, i) => `\`${c.substring(0, 64)}\` = NULLIF(@col_${i}, '')`)
+    : nomesInferidos
+        .map((c, i) => `\`${c}\` = NULLIF(@col_${i}, '')`)
         .join(',\n  ');
 
   const sql = `
@@ -121,7 +129,7 @@ async function carregarCSV(conn, csvPath, schemas) {
   const [result] = await conn.query(sql);
   const duracao = ((Date.now() - inicio) / 1000).toFixed(1);
 
-  return { tabela, linhas: result.affectedRows || 0, duracao, schemaFixo: !!schemaEntry };
+  return { tabela, linhas: result.affectedRows || 0, duracao, schemaFixo: !!schemaEntry, avisos };
 }
 
 async function load(csvGlob) {
@@ -152,9 +160,10 @@ async function load(csvGlob) {
       process.stdout.write(`  ⏳ ${nome.padEnd(45)}`);
 
       try {
-        const { tabela, linhas, duracao, schemaFixo } = await carregarCSV(conn, csvPath, schemas);
+        const { tabela, linhas, duracao, schemaFixo, avisos } = await carregarCSV(conn, csvPath, schemas);
         const tag = schemaFixo ? '📋' : '🔍';
         console.log(`✅ ${tag} ${linhas.toLocaleString('pt-BR')} linhas → ${tabela} (${duracao}s)`);
+        for (const aviso of avisos) console.log(`     ${aviso}`);
         carregados++;
         totalLinhas += linhas;
       } catch (e) {
