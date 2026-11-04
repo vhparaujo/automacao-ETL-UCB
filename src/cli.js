@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { resolverData, EXPRESSOES_VALIDAS } = require('./utils/datas');
+const { lerFalhaAuth } = require('./utils/falha-auth');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
 
@@ -459,6 +460,17 @@ async function demandaADSEspecifico() {
 // ──────────────────────────────────────────────────────
 async function verUltimoLog() {
   limparTela();
+
+  // Alerta de falha de autenticação no último pipeline (gravado por src/pipeline.js)
+  const falhaAuth = lerFalhaAuth(LOGS_DIR);
+  if (falhaAuth) {
+    console.log('█'.repeat(60));
+    console.log('  🔐 ATENÇÃO: a última execução falhou na autenticação!');
+    console.log('     Rode "npm run setup" (ou [1] no menu) para reautenticar.\n');
+    console.log(falhaAuth.trim().split('\n').map((l) => `     ${l}`).join('\n'));
+    console.log('█'.repeat(60) + '\n');
+  }
+
   if (!fs.existsSync(LOGS_DIR) || fs.readdirSync(LOGS_DIR).filter((f) => f.endsWith('.log')).length === 0) {
     console.log('Nenhum log encontrado ainda.\n');
     await perguntar('Pressione Enter para voltar...');

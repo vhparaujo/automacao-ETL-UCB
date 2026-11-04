@@ -11,6 +11,13 @@ const { download: downloadADS } = require('./extractors/ads');
 const { load } = require('./loader/mysql-loader');
 const { run: runTransforms } = require('./transforms/engine');
 const { notificarViews } = require('./exporter/powerbi');
+const {
+  ARQUIVO_ALERTA,
+  MENSAGEM_REAUTENTICAR,
+  ehErroDeAutenticacao,
+  registrarFalhaAuth,
+  limparFalhaAuth,
+} = require('./utils/falha-auth');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
 
@@ -56,14 +63,38 @@ async function executarPipeline(opcoes = {}) {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   log('INFO', `Pipeline iniciado. Log: ${logFile}`);
 
-  const resumo = { bds: null, ads: null, load: null, transform: null, erros: 0 };
+  const resumo = { bds: null, ads: null, load: null, transform: null, erros: 0, falhaAuth: false };
 
   try {
     // Validar autenticação
     console.log('\n📡 Autenticação: validando token...');
-    await getAccessToken();
+    try {
+      await getAccessToken();
+    } catch (e) {
+      if (!ehErroDeAutenticacao(e)) throw e; // erro de rede etc. → tratado como falha crítica genérica
+
+      // Refresh token inválido/expirado: só volta a funcionar após "npm run setup".
+      // Registra alerta e encerra sem tentar as etapas seguintes.
+      resumo.falhaAuth = true;
+      resumo.erros++;
+      console.error('\n' + '█'.repeat(70));
+      console.error(`  ${MENSAGEM_REAUTENTICAR}`);
+      console.error('█'.repeat(70) + '\n');
+      log('ERRO', MENSAGEM_REAUTENTICAR);
+      log('ERRO', `Detalhe: ${e.message}`);
+      try {
+        registrarFalhaAuth(LOGS_DIR, e);
+        log('ERRO', `Alerta gravado em ${path.join(LOGS_DIR, ARQUIVO_ALERTA)}`);
+      } catch (erroAlerta) {
+        log('ERRO', `Não foi possível gravar o alerta de autenticação: ${erroAlerta.message}`);
+      }
+      log('INFO', 'Pipeline encerrado: etapas seguintes não executadas.');
+      fechar();
+      return resumo;
+    }
     console.log('   ✅ Token válido\n');
     log('INFO', 'Autenticação OK');
+    limparFalhaAuth(LOGS_DIR);
 
     // BDS
     if (flags.bds) {
@@ -164,7 +195,9 @@ if (require.main === module) {
     if (args.includes('--apenas-load')) { opcoes.bds = false; opcoes.ads = false; opcoes.transform = false; }
     if (args.includes('--apenas-transform')) { opcoes.bds = false; opcoes.ads = false; opcoes.load = false; }
 
-    executarPipeline(opcoes).catch((e) => { console.error('❌', e.message); process.exit(1); });
+    executarPipeline(opcoes)
+      .then((resumo) => { if (resumo.falhaAuth) process.exitCode = 1; })
+      .catch((e) => { console.error('❌', e.message); process.exit(1); });
   }
 }
 
