@@ -9,10 +9,14 @@ const AdmZip = require('adm-zip');
 const { getAccessToken } = require('../auth/oauth');
 const { obterVersaoLP } = require('../utils/versao-api');
 const { mesmoNome } = require('../utils/nomes');
+const { selecionarExtractMaisRecente } = require('../utils/bds-extracts');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 const ZIPS_DIR = path.join(CSVS_DIR, 'zips');
+
+// Aviso de "extract sem data" é emitido uma única vez por processo
+let avisoSemDataEmitido = false;
 
 function requisicaoAPI(url, token) {
   return new Promise((resolve, reject) => {
@@ -174,7 +178,12 @@ async function download(opcoes = {}) {
       // Renova o token a cada dataset para evitar 401 em sessões longas
       token = await getAccessToken();
       const extracts = await requisicaoAPI(fullInfo.ExtractsLink, token);
-      const latest = (extracts.Objects || [])[0];
+      // Escolhe explicitamente o mais recente por CreatedDate (a API não garante a ordem)
+      const { extract: latest, data: dataExtract, semDatas } = selecionarExtractMaisRecente(extracts.Objects);
+      if (semDatas && !avisoSemDataEmitido) {
+        avisoSemDataEmitido = true;
+        process.stdout.write('\n      ⚠️  Extracts sem CreatedDate/QueuedForProcessingDate — usando a ordem retornada pela API');
+      }
 
       if (!latest?.DownloadLink) {
         process.stdout.write(' — sem arquivo disponível, pulando\n');
@@ -188,7 +197,8 @@ async function download(opcoes = {}) {
       const csvs = extrairZip(zipPath, CSVS_DIR);
       fs.unlinkSync(zipPath);
 
-      console.log(`      ✅ ${(bytes / 1024 / 1024).toFixed(1)} MB — ${csvs.length} CSV(s)\n`);
+      const quando = dataExtract ? ` — extract de ${dataExtract}` : '';
+      console.log(`      ✅ ${(bytes / 1024 / 1024).toFixed(1)} MB — ${csvs.length} CSV(s)${quando}\n`);
       baixados++;
     } catch (e) {
       process.stdout.write(`\n      ⚠️  ${e.message.substring(0, 80)}\n\n`);
