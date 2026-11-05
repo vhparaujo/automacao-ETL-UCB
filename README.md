@@ -145,6 +145,9 @@ Lista todas as transformações configuradas em `config/transforms.json` com seu
 Para adicionar uma nova transformação:
 1. Crie o arquivo `.sql` em `src/transforms/queries/`
 2. Adicione a entrada em `config/transforms.json` com `nome`, `arquivo`, `tipo` (`view`, `exportar_csv` ou `table`) e `ativo: true`
+3. Teste só ela: `npm run transform -- --so <nome>`
+
+Passo a passo completo para analistas (tipos de coluna, filtros típicos dos BDS, modelos de `.sql`, privacidade e problemas conhecidos): **[GUIA_ANALISTA.md](GUIA_ANALISTA.md)**.
 
 ---
 
@@ -154,13 +157,15 @@ Executa o pipeline manualmente, sem esperar o agendamento:
 
 | Opção | Equivalente npm | O que faz |
 |-------|----------------|-----------|
-| [1] Pipeline completo | `npm run pipeline` | BDS + ADS automáticos + carga + transformações |
+| [1] Pipeline completo | `npm run pipeline` | Arquiva `csvs/` em `csvs/_anterior/` + BDS + ADS automáticos + carga + transformações + inventário |
 | [2] Apenas BDS | `npm run bds` | Só baixa os BDS automáticos |
 | [3] Apenas ADS | `npm run ads` | Só baixa os ADS marcados como automáticos |
 | [4] Apenas carga MySQL | `npm run load` | Carrega os CSVs já baixados no MySQL |
 | [5] Apenas transformações | `npm run transform` | Executa as queries SQL configuradas |
 
 As etapas executadas no pipeline completo seguem `pipeline` em `config/schedule.json`. Com `"exportar_csvs": false`, as transformações do tipo `exportar_csv` são puladas (`⏭️  pulada (exportar_csvs = false)`), enquanto `view` e `table` continuam rodando; o resumo final mostra quantas foram puladas. Ao final das transformações, o pipeline lista as views atualizadas para o PowerBI.
+
+**`csvs/_anterior/`:** no pipeline completo (`npm run pipeline`, opção [1] e o agendamento), o conteúdo atual de `csvs/` é movido para `csvs/_anterior/` **antes** dos downloads — nada é apagado, mas só a última execução fica guardada (o `_anterior` antigo é substituído). Assim, um CSV baixado sob demanda semanas atrás não é recarregado toda noite. O loader e o inventário ignoram `csvs/_anterior/` e `csvs/zips/`. Execuções parciais (`--apenas-*`) e downloads sob demanda pela CLI **não** mexem na pasta. No fim, o resumo lista as tabelas do MySQL que **não** foram atualizadas nesta execução (o CSV delas não foi baixado).
 
 ---
 
@@ -201,6 +206,7 @@ npm run bds         # Baixar apenas BDS
 npm run ads         # Baixar apenas ADS
 npm run load        # Carregar CSVs no MySQL
 npm run transform   # Executar transformações SQL
+npm run transform -- --so vw_x   # Só a transformação vw_x (sem autenticar/baixar/carregar)
 npm run start       # Iniciar com agendamento automático (modo watch)
 npm run roles       # Listar IDs das roles disponíveis no Brightspace
 npm run test-auth   # Testar se a autenticação está funcionando
@@ -208,6 +214,8 @@ npm test            # Rodar os testes unitários (node:test, sem MySQL/Brightspa
 npm run db:up       # Subir o MySQL (Docker)
 npm run db:down     # Parar o MySQL (Docker)
 npm run db:logs     # Log do MySQL (Docker)
+npm run ads:filtros # Filtros que cada ADS aceita vs. config/ads-filters.json
+npm run inventario  # Gerar exports/_inventario_csvs.md
 ```
 
 ---
@@ -267,15 +275,61 @@ O loader procura em `config/schemas.json` um schema para cada CSV pelo nome do a
 }
 ```
 
-Quando um CSV não casa com nenhum schema, o log avisa `⚠️  Sem schema fixo para "<arquivo>" — usando inferência de tipos`. Para corrigir, veja o nome real do arquivo em `csvs/` e adicione-o em `aliases` da entrada correspondente. Entradas sem `aliases` continuam funcionando como antes.
+Para corrigir um CSV que deveria ter schema, veja o nome real do arquivo em `csvs/` (ou no inventário) e adicione-o em `aliases` da entrada correspondente. Entradas sem `aliases` continuam funcionando como antes.
+
+### CSVs sem schema fixo: todas as colunas `TEXT`
+
+Quando um CSV não casa com nenhum schema, a tabela é criada com **todas as colunas `TEXT`**, e o log destaca:
+
+```
+🔍 Sem schema fixo para "<arquivo>" → tabela "<tabela>" carregada com todas as colunas TEXT
+```
+
+É o padrão seguro para dados ainda desconhecidos: a inferência pelo nome da coluna pode truncar dados sem erro (ex.: `ID definido da organização` contém texto, mas viraria `INT`). Para voltar à inferência, defina `INFERIR_TIPOS=true` no `.env`. Se a tabela já existir com outra estrutura (colunas novas ou tipos antigos), ela é recriada (`♻️` no log); com a mesma estrutura, só é truncada. Tabelas com schema fixo não mudam. Use `CAST`/`STR_TO_DATE` nas queries, ou crie um schema em `config/schemas.json` depois de inspecionar o inventário.
+
+### Nome do CSV dos ADS (`arquivo_csv`)
+
+O CSV de cada ADS é salvo como `csvs/<nome>.csv`, onde `<nome>` é o nome do relatório sem acentos, em minúsculas, com `_` no lugar de espaços e símbolos (`Notas finais` → `notas_finais.csv`, `Premiações emitidas` → `premiacoes_emitidas.csv`). Para escolher outro nome — por exemplo, para não colidir com um BDS de mesmo nome — use `arquivo_csv` (sem `.csv`; só letras, números, `_` e `-`):
+
+```json
+"Premiações emitidas": {
+  "_revisar": "confirmar filtros com npm run ads:filtros",
+  "automatico": false,
+  "ativo": true,
+  "arquivo_csv": "ads_premiacoes_emitidas",
+  "startDate": "2026-07-01T00:00:00.000Z",
+  "endDate": "2026-12-31T23:59:59.999Z"
+}
+```
+
+As chaves `ativo`, `automatico`, `arquivo_csv` e qualquer chave iniciada por `_` (comentários, como `_revisar`) **não** são enviadas à API; todas as outras viram filtros do relatório.
+
+### Filtros de cada ADS (`npm run ads:filtros`)
+
+Cada relatório ADS declara os seus filtros (ex.: "Notas finais" só tem intervalo de datas). Para ver o que a API declara e comparar com `config/ads-filters.json`:
+
+```bash
+npm run ads:filtros            # relatórios configurados
+npm run ads:filtros -- --todos # todos os ADS disponíveis na API
+```
+
+Para cada relatório mostra os filtros declarados (nome, tipo, descrição, valor padrão), marca `⚠️  filtro desconhecido` para chaves do config que a API não declara e `ℹ️  não configurado — a API usará o padrão` para filtros declarados ausentes do config. Se a resposta não vier no formato documentado, imprime o JSON bruto do primeiro item.
+
+### Inventário dos CSVs (`npm run inventario`)
+
+Gera `exports/_inventario_csvs.md` com, para cada CSV de `csvs/` (sem `_anterior/` e `zips/`): tamanho, número de registros (lido em stream), tabela MySQL de destino, se tem schema fixo ou será `TEXT`, origem (BDS/ADS, pelo nome configurado), colunas na ordem do cabeçalho, o formato das colunas de data/hora (com um exemplo) e se as colunas de ID são todas numéricas. Roda automaticamente no fim do pipeline completo.
+
+> **Privacidade:** só as colunas de data/hora mostram um exemplo de valor (formato não reconhecido vira máscara, ex.: `99/99/9999`). Nenhum outro valor — nome, e-mail, matrícula — entra no inventário. As detecções usam as 1.000 primeiras linhas.
 
 ---
 
 ## Estrutura de pastas geradas em runtime
 
 ```
-csvs/       ← CSVs baixados do Brightspace
-exports/    ← CSVs exportados após transformação
+csvs/            ← CSVs da execução atual (os únicos carregados no MySQL)
+csvs/_anterior/  ← CSVs da execução anterior (substituído a cada pipeline completo)
+csvs/zips/       ← temporário dos downloads
+exports/         ← CSVs exportados após transformação e _inventario_csvs.md
 logs/       ← Logs de cada execução (pipeline-YYYY-MM-DD.log)
               e ULTIMA_FALHA_AUTH.txt quando a autenticação falhar
 ```
@@ -298,4 +352,7 @@ DB_PORT=3307
 DB_USER=dataUCB
 DB_PASSWORD=sua_senha
 DB_NAME=data_ucb
+
+# Tabelas sem schema fixo: false (padrão) = todas TEXT; true = infere tipos pelo nome da coluna
+INFERIR_TIPOS=false
 ```

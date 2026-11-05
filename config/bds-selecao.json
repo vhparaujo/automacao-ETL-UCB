@@ -8,7 +8,17 @@
   "automaticos": [
     "Usuários",
     "Unidades organizacionais",
+    "Inscrições de usuário",
+    "Acesso ao curso",
+    "Log de acesso ao curso",
+    "Log de acesso ao sistema",
     "Objetos de nota",
-    "Posts de discussão"
+    "Resultados das notas",
+    "Objetos de conteúdo",
+    "Posts de discussão",
+    "Objetos de pesquisa",
+    "Objetos de premiação",
+    "Premiações emitidas",
+    "Biblioteca de perguntas"
   ]
 }

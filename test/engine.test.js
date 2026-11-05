@@ -82,3 +82,45 @@ test('sem opção explícita, lê pipeline.exportar_csvs de config/schedule.json
   assert.deepEqual(exportacoes, []);
   fs.unlinkSync('config/schedule.json');
 });
+
+// ── --so: rodar só as transformações pedidas ───────────────────────
+const { lerArgsSomente, selecionarTransformacoes } = require('../src/transforms/engine');
+
+test('lerArgsSomente aceita --so x, --so=x, vírgulas e repetição', () => {
+  assert.equal(lerArgsSomente(['--apenas-transform']), null);
+  assert.deepEqual(lerArgsSomente(['--apenas-transform', '--so', 'vw_a']), ['vw_a']);
+  assert.deepEqual(lerArgsSomente(['--so=vw_a,vw_b']), ['vw_a', 'vw_b']);
+  assert.deepEqual(lerArgsSomente(['--so', 'vw_a', '--so', 'vw_b']), ['vw_a', 'vw_b']);
+  assert.throws(() => lerArgsSomente(['--so']), /precisa do nome/);
+  assert.throws(() => lerArgsSomente(['--so', '--apenas-transform']), /precisa do nome/);
+});
+
+test('selecionarTransformacoes: inclui inativa pedida, mantém ordem do config e sugere nomes', () => {
+  const lista = [
+    { nome: 'vw_a', ativo: true },
+    { nome: 'vw_b', ativo: false },
+    { nome: 'export_c' },
+  ];
+  assert.deepEqual(selecionarTransformacoes(lista, null).selecionadas.map((t) => t.nome), ['vw_a', 'export_c']);
+
+  const r = selecionarTransformacoes(lista, ['export_c', 'vw_b']);
+  assert.deepEqual(r.selecionadas.map((t) => t.nome), ['vw_b', 'export_c']);
+  assert.deepEqual(r.inativas, ['vw_b']);
+
+  assert.throws(() => selecionarTransformacoes(lista, ['vw_x']), /não encontrada.*"vw_x" \(parecidos: vw_a, vw_b/);
+});
+
+test('run({ somente }) executa só a pedida e ignora exportar_csvs = false do schedule', async () => {
+  fs.writeFileSync('config/schedule.json', JSON.stringify({ pipeline: { exportar_csvs: false } }));
+  queriesExecutadas.length = 0; exportacoes.length = 0;
+  const r = await run({ somente: ['export_c'] });
+  assert.equal(r.executadas, 1);
+  assert.equal(r.puladas, 0);
+  assert.deepEqual(exportacoes, ['exports/c.csv']);
+  assert.equal(queriesExecutadas.length, 0);
+  fs.unlinkSync('config/schedule.json');
+});
+
+test('run({ somente }) com nome inexistente lança erro antes de conectar', async () => {
+  await assert.rejects(run({ somente: ['nao_existe'] }), /não encontrada/);
+});

@@ -8,8 +8,8 @@ const cron = require('node-cron');
 const { getAccessToken } = require('./auth/oauth');
 const { download: downloadBDS } = require('./extractors/bds');
 const { download: downloadADS } = require('./extractors/ads');
-const { load } = require('./loader/mysql-loader');
-const { run: runTransforms } = require('./transforms/engine');
+const { load, listarTabelas } = require('./loader/mysql-loader');
+const { run: runTransforms, lerArgsSomente } = require('./transforms/engine');
 const { notificarViews } = require('./exporter/powerbi');
 const {
   ARQUIVO_ALERTA,
@@ -18,8 +18,11 @@ const {
   registrarFalhaAuth,
   limparFalhaAuth,
 } = require('./utils/falha-auth');
+const { gerarInventario } = require('./utils/inventario');
+const { arquivarCsvsAnteriores, tabelasNaoAtualizadas, PASTA_ANTERIOR } = require('./utils/pasta-csvs');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
+const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 
 function timestamp() {
   return new Date().toLocaleTimeString('pt-BR', { hour12: false });
@@ -96,6 +99,14 @@ async function executarPipeline(opcoes = {}) {
     log('INFO', 'Autenticação OK');
     limparFalhaAuth(LOGS_DIR);
 
+    // Pipeline completo: a execução anterior vai para csvs/_anterior/ para não ser recarregada.
+    // Execuções parciais (--apenas-*) e downloads sob demanda pela CLI não mexem na pasta.
+    if (opcoes.completo && (flags.bds || flags.ads)) {
+      const movidos = arquivarCsvsAnteriores(CSVS_DIR);
+      console.log(`🗂️  ${movidos.length} item(ns) da execução anterior movido(s) para ${CSVS_DIR}/${PASTA_ANTERIOR}/\n`);
+      log('INFO', `csvs/: ${movidos.length} item(ns) movido(s) para ${PASTA_ANTERIOR}/`);
+    }
+
     // BDS
     if (flags.bds) {
       log('INFO', 'Iniciando download BDS');
@@ -118,6 +129,16 @@ async function executarPipeline(opcoes = {}) {
       resumo.load = await load();
       log('INFO', `MySQL: ${resumo.load.carregados} tabelas, ${resumo.load.totalLinhas} linhas`);
       resumo.erros += resumo.load.erros;
+
+      // Tabelas do banco cujo CSV não veio nesta execução (dados possivelmente defasados)
+      try {
+        resumo.naoAtualizadas = tabelasNaoAtualizadas(await listarTabelas(), resumo.load.tabelas);
+        if (resumo.naoAtualizadas.length > 0) {
+          log('AVISO', `Tabelas NÃO atualizadas nesta execução (CSV não baixado): ${resumo.naoAtualizadas.join(', ')}`);
+        }
+      } catch (e) {
+        log('AVISO', `Não foi possível listar as tabelas do MySQL: ${e.message}`);
+      }
     }
 
     // Transformações
@@ -127,6 +148,18 @@ async function executarPipeline(opcoes = {}) {
       log('INFO', `Transformações: ${resumo.transform.executadas} executadas, ${resumo.transform.puladas} puladas`);
       resumo.erros += resumo.transform.erros;
       await notificarViews(resumo.transform.views);
+    }
+
+    // Inventário dos CSVs desta execução (só no pipeline completo) → exports/_inventario_csvs.md
+    if (opcoes.completo) {
+      try {
+        resumo.inventario = await gerarInventario();
+        log('INFO', `Inventário: ${resumo.inventario.total} CSV(s) → ${resumo.inventario.arquivo}`);
+        resumo.erros += resumo.inventario.erros;
+      } catch (e) {
+        log('ERRO', `Inventário falhou: ${e.message}`);
+        resumo.erros++;
+      }
     }
 
   } catch (e) {
@@ -147,6 +180,11 @@ async function executarPipeline(opcoes = {}) {
   if (resumo.transform) {
     const puladas = resumo.transform.puladas ? ` | ⏭️  ${resumo.transform.puladas} puladas (exportar_csvs = false)` : '';
     console.log(`   🔧 Transformações: ${resumo.transform.executadas} executadas${puladas}`);
+    if (resumo.transform.views?.length) console.log(`   📊 Views atualizadas (PowerBI): ${resumo.transform.views.join(', ')}`);
+  }
+  if (resumo.inventario) console.log(`   📒 Inventário: ${resumo.inventario.arquivo}`);
+  if (resumo.naoAtualizadas?.length > 0) {
+    console.log(`   ⚠️  ${resumo.naoAtualizadas.length} tabela(s) NÃO atualizada(s) nesta execução: ${resumo.naoAtualizadas.join(', ')}`);
   }
   if (resumo.erros > 0) console.log(`   ⚠️  ${resumo.erros} erro(s) — ver ${logFile}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -173,15 +211,32 @@ function iniciarAgendamento() {
 
   cron.schedule(ag.cron, () => {
     console.log(`\n⏰ Agendamento disparado: ${new Date().toLocaleString('pt-BR')}`);
-    executarPipeline().catch((e) => console.error('❌ Erro no agendamento:', e.message));
+    executarPipeline({ completo: true }).catch((e) => console.error('❌ Erro no agendamento:', e.message));
   }, { timezone: tz });
 }
 
 if (require.main === module) {
   const args = process.argv.slice(2);
 
+  let somente = null;
+  try {
+    somente = lerArgsSomente(args);
+  } catch (e) {
+    console.error('❌', e.message);
+    process.exit(1);
+  }
+
   if (args.includes('--watch')) {
     iniciarAgendamento();
+  } else if (somente) {
+    // npm run transform -- --so <nome>: roda só as transformações pedidas, direto no MySQL.
+    // Não autentica no Brightspace, não baixa nem carrega nada — para o analista testar a sua query.
+    runTransforms({ somente })
+      .then(async (r) => {
+        await notificarViews(r.views);
+        if (r.erros > 0) process.exitCode = 1;
+      })
+      .catch((e) => { console.error('❌', e.message); process.exit(1); });
   } else {
     const opcoes = {
       bds: args.includes('--apenas-bds') || !args.some((a) => a.startsWith('--apenas')),
@@ -194,6 +249,9 @@ if (require.main === module) {
     if (args.includes('--apenas-ads')) { opcoes.bds = false; opcoes.load = false; opcoes.transform = false; }
     if (args.includes('--apenas-load')) { opcoes.bds = false; opcoes.ads = false; opcoes.transform = false; }
     if (args.includes('--apenas-transform')) { opcoes.bds = false; opcoes.ads = false; opcoes.load = false; }
+
+    // Sem --apenas-* = pipeline completo (arquiva csvs/ antes de baixar e roda o inventário no fim)
+    opcoes.completo = !args.some((a) => a.startsWith('--apenas'));
 
     executarPipeline(opcoes)
       .then((resumo) => { if (resumo.falhaAuth) process.exitCode = 1; })

@@ -5,10 +5,12 @@ const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
-const AdmZip = require('adm-zip');
+const { extrairCsvs } = require('../utils/zip');
 const { getAccessToken } = require('../auth/oauth');
 const { obterVersaoLP } = require('../utils/versao-api');
 const { resolverPeriodo } = require('../utils/datas');
+const { mesmoNome } = require('../utils/nomes');
+const { montarFiltros, nomeArquivoADS } = require('../utils/ads-config');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -85,18 +87,26 @@ function baixarArquivo(downloadUrl, destino, token) {
   });
 }
 
-// Retorna todos os ADS disponíveis na API (usado pela CLI)
-async function listar() {
+// Resposta bruta de GET /dataExport/list (array de DataSetData) — usada por src/utils/ads-filtros.js
+async function listarBruto() {
   const token = await getAccessToken();
   const versao = await obterVersaoLP();
   const resp = await requisicao(`${HOST}/d2l/api/lp/${versao}/dataExport/list`, token);
-  const lista = Array.isArray(resp) ? resp : resp.Objects || [];
+  return { versao, resposta: resp, lista: Array.isArray(resp) ? resp : resp.Objects || [] };
+}
+
+// Retorna todos os ADS disponíveis na API (usado pela CLI)
+async function listar() {
+  const { versao, lista } = await listarBruto();
   return lista.map((r) => ({ nome: r.Name, dataSetId: r.DataSetId, versao }));
 }
 
 async function processarJob(nome, config, versao, token) {
   // Resolve datas relativas ("hoje", "-180d", "inicio_semestre"…) no momento da execução.
   // Expressão inválida lança erro aqui — download() registra e segue para o próximo relatório.
+  // Nome do CSV de saída (valida "arquivo_csv" antes de criar o job)
+  const nomeFixo = nomeArquivoADS(nome, config);
+
   const periodo = resolverPeriodo(config, new Date());
   const configEfetiva = { ...config, ...periodo };
   if (periodo.startDate || periodo.endDate) {
@@ -106,18 +116,15 @@ async function processarJob(nome, config, versao, token) {
   const disponíveis = await requisicao(`${HOST}/d2l/api/lp/${versao}/dataExport/list`, token);
   const listaADS = Array.isArray(disponíveis) ? disponíveis : disponíveis.Objects || [];
 
-  const match = listaADS.find((r) => (r.Name || '').toLowerCase() === nome.toLowerCase());
+  // Comparação normalizada (sem acento, case-insensitive, ignora espaços/_/-)
+  const match = listaADS.find((r) => mesmoNome(r.Name || '', nome));
   if (!match) {
     const nomes = listaADS.map((r) => r.Name).join(', ');
     throw new Error(`Relatório "${nome}" não encontrado. Disponíveis: ${nomes}`);
   }
 
-  const filtros = Object.entries(configEfetiva)
-    .filter(([k]) => !['ativo', 'automatico'].includes(k))
-    .map(([k, v]) => ({
-      Name: k,
-      Value: Array.isArray(v) ? v.join(',') : String(v),
-    }));
+  // ativo, automatico, arquivo_csv e chaves "_*" nunca vão para a API
+  const filtros = montarFiltros(configEfetiva);
 
   const job = await requisicao(
     `${HOST}/d2l/api/lp/${versao}/dataExport/create`,
@@ -159,18 +166,12 @@ async function processarJob(nome, config, versao, token) {
 
     if (pronto) {
       process.stdout.write('\n');
-      const zipPath = path.join(ZIPS_DIR, `ADS_${nome.replace(/[^a-zA-Z0-9]/g, '_')}.zip`);
+      const zipPath = path.join(ZIPS_DIR, `ADS_${path.basename(nomeFixo, '.csv')}.zip`);
       await baixarArquivo(downloadUrl, zipPath, token);
 
-      const nomeFixo = nome.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase() + '.csv';
-      const zip = new AdmZip(zipPath);
-      zip.getEntries().forEach((entry) => {
-        if (!entry.isDirectory && entry.entryName.endsWith('.csv')) {
-          fs.writeFileSync(path.join(CSVS_DIR, nomeFixo), entry.getData());
-        }
-      });
+      await extrairCsvs(zipPath, CSVS_DIR, () => nomeFixo); // streaming, salva com o nome fixo
       fs.unlinkSync(zipPath);
-      return true;
+      return nomeFixo;
     }
   }
 
@@ -221,8 +222,8 @@ async function download(opcoes = {}) {
   for (const [nome, config] of relatorios) {
     console.log(`\n  🚀 ${nome}`);
     try {
-      await processarJob(nome, config, versao, token);
-      console.log(`  ✅ ${nome} — extraído para ${CSVS_DIR}/`);
+      const arquivo = await processarJob(nome, config, versao, token);
+      console.log(`  ✅ ${nome} — extraído para ${path.join(CSVS_DIR, arquivo)}`);
       processados++;
     } catch (e) {
       console.log(`  ❌ ${e.message.substring(0, 150)}`);
@@ -239,4 +240,4 @@ if (require.main === module) {
   download().catch((e) => { console.error('❌', e.message); process.exit(1); });
 }
 
-module.exports = { download, listar };
+module.exports = { download, listar, listarBruto };

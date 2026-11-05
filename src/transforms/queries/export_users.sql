@@ -6,11 +6,9 @@ SELECT
   MiddleName,
   LastName,
   IsActive,
-  Organization,
   ExternalEmail,
-  SignupDate,
-  FirstLoginDate,
+  CreationDate,
   OrgRoleId,
-  LastAccessed
+  DateDeleted
 FROM users
 ORDER BY LastName, FirstName;

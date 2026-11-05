@@ -1,9 +1,10 @@
 {
-  "_instrucoes": "Schemas fixos para tabelas conhecidas. O loader usa estes ao invés de auto-inferir. Chave = nome do CSV (sem extensão). Opcional: \"aliases\": [\"Nome alternativo\", ...] em cada entrada, com outros nomes que o arquivo CSV pode ter (ex.: em português). O casamento ignora acentos, maiúsculas/minúsculas, espaços, '_' e '-' (\"Unidades_organizacionais\" casa com \"Unidades organizacionais\"). Se um CSV não casar com nenhuma chave nem alias, o loader avisa no log e usa inferência de tipos. Para adicionar: veja o nome do CSV em csvs/ e inclua-o em aliases da entrada correspondente.",
+  "_instrucoes": "Schemas fixos para tabelas conhecidas. O loader usa estes ao invés de auto-inferir. Chave = nome do CSV (sem extensão). Opcional: \"aliases\": [\"Nome alternativo\", ...] em cada entrada, com outros nomes que o arquivo CSV pode ter (ex.: em português). O casamento ignora acentos, maiúsculas/minúsculas, espaços, '_' e '-' (\"Unidades_organizacionais\" casa com \"Unidades organizacionais\"). Se um CSV não casar com nenhuma chave nem alias, a tabela é criada com todas as colunas TEXT. Para adicionar: veja o nome do CSV em csvs/ e inclua-o em aliases da entrada correspondente. Colunas: os nomes devem ser IGUAIS aos do cabeçalho do CSV (confira em exports/_inventario_csvs.md); valor = \"TIPO\" ou {\"tipo\": \"TIPO\", \"coluna\": \"nome na tabela\"} (use 'coluna' para nomes com mais de 64 caracteres). Coluna do schema que não existe no CSV fica NULL e gera aviso na carga. Booleanos TRUE/FALSE: use TINYINT(1). Opcional por entrada: \"indices\": [[\"UserId\"], [\"OrgUnitId\", \"UserId\"]] — cada item é um índice (colunas), criado após a carga; acelera JOIN/WHERE nessas colunas.",
 
   "Users": {
     "tabela": "users",
     "aliases": ["Usuários"],
+    "indices": [["UserId"]],
     "colunas": {
       "UserId":         "INT",
       "UserName":       "VARCHAR(255)",
@@ -12,19 +13,18 @@
       "MiddleName":     "VARCHAR(150)",
       "LastName":       "VARCHAR(150)",
       "IsActive":       "TINYINT(1)",
-      "Organization":   "VARCHAR(255)",
       "ExternalEmail":  "VARCHAR(255)",
-      "SignupDate":     "DATETIME",
-      "FirstLoginDate": "DATETIME",
-      "Version":        "INT",
+      "CreationDate":   "DATETIME",
+      "Version":        "BIGINT",
       "OrgRoleId":      "INT",
-      "LastAccessed":   "DATETIME"
+      "DateDeleted":    "DATETIME"
     }
   },
 
   "OrganizationalUnits": {
     "tabela": "organizationalunits",
     "aliases": ["Unidades organizacionais"],
+    "indices": [["OrgUnitId"], ["Type"]],
     "colunas": {
       "OrgUnitId":      "INT",
       "Organization":   "VARCHAR(255)",
@@ -38,7 +38,7 @@
       "IsDeleted":      "TINYINT(1)",
       "DeletedDate":    "DATETIME",
       "RecycledDate":   "DATETIME",
-      "Version":        "INT",
+      "Version":        "BIGINT",
       "OrgUnitTypeId":  "INT"
     }
   },
@@ -46,6 +46,7 @@
   "GradeObjects": {
     "tabela": "gradeobjects",
     "aliases": ["Objetos de nota"],
+    "indices": [["GradeObjectId"], ["OrgUnitId"]],
     "colunas": {
       "GradeObjectId":              "INT",
       "OrgUnitId":                  "INT",
@@ -75,12 +76,15 @@
       "IsDeleted":                  "TINYINT(1)",
       "DeletedDate":                "DATETIME",
       "DeletedByUserId":            "INT",
-      "ResultId":                   "INT"
+      "ResultId":                   "INT",
+      "ToolId":                     "INT",
+      "Version":                    "BIGINT"
     }
   },
 
   "GradeResults": {
     "tabela": "graderesults",
+    "indices": [["UserId"], ["OrgUnitId", "GradeObjectId"]],
     "colunas": {
       "GradeObjectId":       "INT",
       "OrgUnitId":           "INT",
@@ -91,19 +95,20 @@
       "WeightedDenominator": "DECIMAL(10,4)",
       "IsReleased":          "TINYINT(1)",
       "IsDropped":           "TINYINT(1)",
-      "IsExempt":            "TINYINT(1)",
       "LastModified":        "DATETIME",
       "LastModifiedBy":      "INT",
       "Comments":            "TEXT",
       "PrivateComments":     "TEXT",
       "GradeText":           "VARCHAR(255)",
       "GradeReleasedDate":   "DATETIME",
-      "Version":             "INT"
+      "Version":             "BIGINT",
+      "IsDeleted":           "TINYINT(1)"
     }
   },
 
   "ContentObjects": {
     "tabela": "contentobjects",
+    "indices": [["ContentObjectId"], ["OrgUnitId"]],
     "colunas": {
       "ContentObjectId":        "INT",
       "OrgUnitId":              "INT",
@@ -135,6 +140,7 @@
 
   "UserEnrollments": {
     "tabela": "userenrollments",
+    "indices": [["UserId"], ["OrgUnitId", "RoleId"]],
     "colunas": {
       "OrgUnitId":      "INT",
       "UserId":         "INT",
@@ -147,6 +153,7 @@
 
   "CourseAccessLog": {
     "tabela": "courseaccesslog",
+    "indices": [["UserId"], ["OrgUnitId"]],
     "colunas": {
       "OrgUnitId": "INT",
       "UserId":    "INT",
@@ -157,6 +164,7 @@
 
   "CourseAccess": {
     "tabela": "courseaccess",
+    "indices": [["UserId"], ["OrgUnitId", "UserId"]],
     "colunas": {
       "OrgUnitId":   "INT",
       "UserId":      "INT",
@@ -166,6 +174,7 @@
 
   "SystemAccessLog": {
     "tabela": "systemaccesslog",
+    "indices": [["UserId"]],
     "colunas": {
       "SessionId":     "VARCHAR(100)",
       "UserId":        "INT",
@@ -182,6 +191,7 @@
   "DiscussionPosts": {
     "tabela": "discussionposts",
     "aliases": ["Posts de discussão"],
+    "indices": [["UserId"], ["OrgUnitId"]],
     "colunas": {
       "OrgUnitId":       "INT",
       "TopicId":         "INT",
@@ -202,36 +212,42 @@
       "Thread":          "TEXT",
       "WordCount":       "INT",
       "AttachmentCount": "INT",
-      "Version":         "INT"
+      "Version":         "BIGINT"
     }
   },
 
   "notas_finais": {
     "tabela": "notas_finais",
+    "indices": [["ID do Usuário"], ["ID da oferta de curso"]],
     "colunas": {
-      "Nome de usuário":                "VARCHAR(255)",
-      "Nome":                           "VARCHAR(150)",
-      "Sobrenome":                      "VARCHAR(150)",
-      "ID definido da organização":     "VARCHAR(100)",
-      "ID do Usuário":                  "INT",
-      "Nome da função":                 "VARCHAR(100)",
-      "ID da função":                   "INT",
-      "Ativo":                          "TINYINT(1)",
-      "Nome da oferta de curso":        "VARCHAR(255)",
-      "Código da oferta de curso":      "VARCHAR(100)",
-      "ID da oferta de curso":          "INT",
-      "Nota Final Calculada":           "DECIMAL(10,4)",
-      "Nota Final Ajustada":            "DECIMAL(10,4)",
-      "Esquema de nota - Símbolo":      "VARCHAR(100)",
-      "Nota Liberada":                  "TINYINT(1)",
-      "Data de Liberação da Nota":      "DATETIME",
-      "Última Modificação da Nota":     "DATETIME",
-      "Comentários de nota final":      "TEXT"
+      "Nome de usuário":                                     "VARCHAR(255)",
+      "Nome":                                                "VARCHAR(150)",
+      "Sobrenome":                                           "VARCHAR(150)",
+      "ID definido da organização":                          "VARCHAR(100)",
+      "ID do Usuário":                                       "INT",
+      "ID da função":                                        "INT",
+      "Nome da função":                                      "VARCHAR(100)",
+      "ID do semestre":                                      "VARCHAR(255)",
+      "Nome do Semestre":                                    "VARCHAR(255)",
+      "Código do Semestre":                                  "VARCHAR(255)",
+      "ID da oferta de curso":                               "INT",
+      "Código da oferta de curso":                           "VARCHAR(255)",
+      "Nome da oferta de curso":                             "VARCHAR(255)",
+      "Nome da seção do curso":                              "VARCHAR(255)",
+      "Nota final calculada (porcentagem)":                  "DECIMAL(10,4)",
+      "Data da última modificação da nota final calculada":  "DATETIME",
+      "Comentários finais calculados":                       "TEXT",
+      "Nota final ajustada (porcentagem)":                   "DECIMAL(10,4)",
+      "Data da última modificação da nota final ajustada":   "DATETIME",
+      "Comentários finais ajustados":                        "TEXT",
+      "A nota final ajustada está liberada?":                "TINYINT(1)",
+      "Ultima modificação da nota final ajustada por":       "VARCHAR(255)"
     }
   },
 
   "uso_do_instrutor": {
     "tabela": "uso_do_instrutor",
+    "indices": [["ID do Usuário"], ["ID da oferta de curso"]],
     "colunas": {
       "Nome de usuário":                                "VARCHAR(255)",
       "Nome":                                           "VARCHAR(150)",
@@ -262,42 +278,44 @@
 
   "uso_do_aluno": {
     "tabela": "uso_do_aluno",
+    "_revisar": "Cabeçalho conferido com o CSV real (nov/2026), mas o relatório veio com 0 linhas: os tipos não foram validados com dados. 'Tempo Total Gasto no Conteúdo' fica VARCHAR até conhecermos o formato.",
+    "indices": [["ID do Usuário"], ["ID da oferta de curso"]],
     "colunas": {
-      "Id de Oferta de Curso":                                    "INT",
-      "Código da Oferta de Curso":                               "VARCHAR(100)",
-      "Nome da Oferta de Curso":                                 "VARCHAR(255)",
-      "Nome do Departamentos Principal":                         "VARCHAR(255)",
-      "Código do Departamentos Principal":                       "VARCHAR(100)",
-      "Id do Semestre":                                          "INT",
-      "Código do Semestre":                                      "VARCHAR(100)",
-      "Nome do Semestre":                                        "VARCHAR(255)",
-      "Id do Usuário":                                           "INT",
-      "Nome de usuário":                                         "VARCHAR(255)",
-      "ID Definido da Organização":                              "VARCHAR(100)",
-      "Nome":                                                    "VARCHAR(150)",
-      "Sobrenome":                                               "VARCHAR(150)",
-      "Ativo":                                                   "TINYINT(1)",
-      "Id da Função":                                            "INT",
-      "Nome da Função":                                          "VARCHAR(100)",
-      "Conteúdo Concluído":                                      "INT",
-      "Conteúdo Necessário":                                     "INT",
-      "Lista de Verificação Concluída":                          "INT",
-      "Questionário Concluído":                                  "INT",
-      "Total de Tentativas de Realização do Questionário":       "INT",
-      "Postagem de Discussão Criada":                            "INT",
-      "Respostas à Postagem de Discussão":                       "INT",
-      "Postagem de Discussão Lida":                              "INT",
-      "Última Data de Postagem de Discussão":                    "DATETIME",
-      "Número de Envios de Atribuições":                         "INT",
-      "Última Data de Envio da Atribuição":                      "DATETIME",
-      "Total de Tempo Gasto no Conteúdo":                        "BIGINT",
-      "Data da Última Visita":                                   "DATETIME",
-      "Último Logon do Sistema":                                 "DATETIME",
-      "Número de Logons ao Sistema":                             "INT",
-      "Nome do Auditor":                                         "VARCHAR(255)",
-      "Data da última tentativa de realização do teste":         "DATETIME",
-      "Conclusao SCORM":                                         "INT",
-      "Ultima Visita SCORM":                                     "DATETIME"
+      "ID da oferta de curso":                                                                    "INT",
+      "Código da oferta de curso":                                                                "VARCHAR(255)",
+      "Nome da oferta de curso":                                                                  "VARCHAR(255)",
+      "Nome do departamento principal":                                                           "VARCHAR(255)",
+      "Código do departamento principal":                                                         "VARCHAR(255)",
+      "ID do semestre":                                                                           "VARCHAR(255)",
+      "Código do Semestre":                                                                       "VARCHAR(255)",
+      "Nome do Semestre":                                                                         "VARCHAR(255)",
+      "ID do Usuário":                                                                            "INT",
+      "Nome de usuário":                                                                          "VARCHAR(255)",
+      "ID definido da organização":                                                               "VARCHAR(100)",
+      "Nome":                                                                                     "VARCHAR(150)",
+      "Sobrenome":                                                                                "VARCHAR(150)",
+      "Ativo":                                                                                    "TINYINT(1)",
+      "ID da função":                                                                             "INT",
+      "Nome da função":                                                                           "VARCHAR(100)",
+      "Conteúdo concluído":                                                                       "INT",
+      "Conteúdo necessário":                                                                      "INT",
+      "Lista de verificação concluída":                                                           "INT",
+      "Questionário concluído":                                                                   "INT",
+      "Total de tentativas de realização do questionário":                                        "INT",
+      "Postagem de discussão criada":                                                             "INT",
+      "Respostas à postagem de discussão":                                                        "INT",
+      "Postagem de discussão lida":                                                               "INT",
+      "Data da última postagem de discussão":                                                     "DATETIME",
+      "Número de envios de atividades":                                                           "INT",
+      "Última data de envio de atividade":                                                        "DATETIME",
+      "Tempo Total Gasto no Conteúdo":                                                            "VARCHAR(50)",
+      "Data da última visita":                                                                    "DATETIME",
+      "Último logon no sistema":                                                                  "DATETIME",
+      "Número de logons no sistema":                                                              "INT",
+      "Nome do auditor":                                                                          "VARCHAR(255)",
+      "Data da última tentativa de realização do questionário":                                   "DATETIME",
+      "Data de conclusão do último Modelo de referência do objeto de courseware compartilhável":  {"tipo": "DATETIME", "coluna": "Data de conclusão do último SCORM"},
+      "Data da última visita ao Modelo de referência do objeto de courseware compartilhável":     {"tipo": "DATETIME", "coluna": "Data da última visita ao SCORM"}
     }
   }
 }

@@ -5,10 +5,10 @@ const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
-const AdmZip = require('adm-zip');
+const { extrairCsvs } = require('../utils/zip');
 const { getAccessToken } = require('../auth/oauth');
 const { obterVersaoLP } = require('../utils/versao-api');
-const { mesmoNome } = require('../utils/nomes');
+const { mesmoNome, nomesNaoEncontrados } = require('../utils/nomes');
 const { selecionarExtractMaisRecente } = require('../utils/bds-extracts');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
@@ -87,18 +87,6 @@ function baixarArquivo(downloadUrl, destino, token) {
   });
 }
 
-function extrairZip(zipPath, destDir) {
-  const zip = new AdmZip(zipPath);
-  const csvs = [];
-  for (const entry of zip.getEntries()) {
-    if (!entry.isDirectory && entry.entryName.endsWith('.csv')) {
-      zip.extractEntryTo(entry, destDir, false, true);
-      csvs.push(path.join(destDir, path.basename(entry.entryName)));
-    }
-  }
-  return csvs;
-}
-
 // Retorna todos os datasets disponíveis na API (usado pela CLI)
 async function listar() {
   const token = await getAccessToken();
@@ -127,6 +115,7 @@ async function download(opcoes = {}) {
   const todosDatasets = listaAPI.Objects || [];
 
   let selecionados;
+  let nomesConfigurados = [];
 
   if (modo === 'todos') {
     selecionados = todosDatasets;
@@ -142,10 +131,19 @@ async function download(opcoes = {}) {
     } else {
       // Comparação normalizada: "Usuarios" e "Usuários" são o mesmo dataset
       const automaticos = config.automaticos || [];
+      nomesConfigurados = automaticos;
       selecionados = todosDatasets.filter((ds) =>
         automaticos.some((n) => mesmoNome(ds.Full?.Name || '', n))
       );
     }
+  }
+
+  // Nomes configurados (ou pedidos pela CLI) que não existem na API: avisa com sugestões e segue
+  const pedidos = modo === 'selecao' ? opcoes.nomes || [] : modo === 'todos' ? [] : nomesConfigurados;
+  const nomesAPI = todosDatasets.map((ds) => ds.Full?.Name).filter(Boolean);
+  for (const { nome, sugestoes } of nomesNaoEncontrados(pedidos, nomesAPI)) {
+    const dica = sugestoes.length ? ` Parecidos: ${sugestoes.map((x) => `"${x}"`).join(', ')}` : ' Nenhum nome parecido na API.';
+    console.log(`⚠️  BDS "${nome}" não encontrado.${dica}`);
   }
 
   if (selecionados.length === 0) {
@@ -194,7 +192,7 @@ async function download(opcoes = {}) {
       process.stdout.write('\n');
       const zipPath = path.join(ZIPS_DIR, `${nome.replace(/[^a-zA-Z0-9]/g, '_')}.zip`);
       const bytes = await baixarArquivo(latest.DownloadLink, zipPath, token);
-      const csvs = extrairZip(zipPath, CSVS_DIR);
+      const csvs = await extrairCsvs(zipPath, CSVS_DIR); // streaming: CSVs de vários GB
       fs.unlinkSync(zipPath);
 
       const quando = dataExtract ? ` — extract de ${dataExtract}` : '';

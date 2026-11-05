@@ -29,7 +29,10 @@ function mockarModulo(relativo, exportsFalsos) {
 mockarModulo('src/auth/oauth.js', { getAccessToken: () => comportamentoToken() });
 mockarModulo('src/extractors/bds.js', { download: async () => { etapasChamadas.push('bds'); return { baixados: 0, erros: 0 }; } });
 mockarModulo('src/extractors/ads.js', { download: async () => { etapasChamadas.push('ads'); return { processados: 0, erros: 0 }; } });
-mockarModulo('src/loader/mysql-loader.js', { load: async () => { etapasChamadas.push('load'); return { carregados: 0, erros: 0, totalLinhas: 0 }; } });
+mockarModulo('src/loader/mysql-loader.js', {
+  load: async () => { etapasChamadas.push('load'); return { carregados: 0, erros: 0, totalLinhas: 0, tabelas: [] }; },
+  listarTabelas: async () => [],
+});
 mockarModulo('src/transforms/engine.js', { run: async () => { etapasChamadas.push('transform'); return { executadas: 0, erros: 0, puladas: 0, views: [] }; } });
 
 const { executarPipeline } = require('../src/pipeline');

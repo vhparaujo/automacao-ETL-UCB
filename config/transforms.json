@@ -8,6 +8,13 @@
 
   "transformacoes": [
     {
+      "nome": "vw_teste_inscritos_vs_acessos",
+      "arquivo": "src/transforms/queries/vw_teste_inscritos_vs_acessos.sql",
+      "ativo": true,
+      "tipo": "view",
+      "descricao": "VIEW DE TESTE: inscritos vs. com acesso por unidade organizacional (valida download → carga → transformação)"
+    },
+    {
       "nome": "export_users",
       "arquivo": "src/transforms/queries/export_users.sql",
       "ativo": true,
@@ -102,6 +109,14 @@
       "tipo": "exportar_csv",
       "arquivo_saida": "exports/posts_discussao.csv",
       "descricao": "Exporta posts de discussão"
+    },
+    {
+      "nome": "export_alunos_sem_acesso",
+      "arquivo": "src/transforms/queries/export_alunos_sem_acesso.sql",
+      "tipo": "exportar_csv",
+      "arquivo_saida": "exports/alunos_sem_acesso.csv",
+      "ativo": false,
+      "descricao": "Alunos do semestre que nunca acessaram nenhuma disciplina no AVA"
     }
   ]
 }

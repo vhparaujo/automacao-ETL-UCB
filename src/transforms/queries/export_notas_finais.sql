@@ -6,16 +6,20 @@ SELECT
   `ID do Usuário`,
   `Nome da função`,
   `ID da função`,
-  `Ativo`,
+  `ID do semestre`,
+  `Nome do Semestre`,
+  `Código do Semestre`,
   `Nome da oferta de curso`,
   `Código da oferta de curso`,
   `ID da oferta de curso`,
-  `Nota Final Calculada`,
-  `Nota Final Ajustada`,
-  `Esquema de nota - Símbolo`,
-  `Nota Liberada`,
-  `Data de Liberação da Nota`,
-  `Última Modificação da Nota`,
-  `Comentários de nota final`
+  `Nome da seção do curso`,
+  `Nota final calculada (porcentagem)`,
+  `Data da última modificação da nota final calculada`,
+  `Comentários finais calculados`,
+  `Nota final ajustada (porcentagem)`,
+  `Data da última modificação da nota final ajustada`,
+  `Comentários finais ajustados`,
+  `A nota final ajustada está liberada?`,
+  `Ultima modificação da nota final ajustada por`
 FROM notas_finais
 ORDER BY `Nome da oferta de curso`, `Sobrenome`, `Nome`;

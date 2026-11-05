@@ -60,3 +60,38 @@ test('colisão é case-insensitive (como no MySQL) e sufixo não colide com colu
   const { nomes } = nomesColunasUnicos(['Nome', 'NOME', 'Nome_2']);
   assert.deepEqual(nomes, ['Nome', 'NOME_2', 'Nome_2_2']);
 });
+
+// ── Terminador de linha (LOAD DATA) ────────────────────────────────
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { detectarTerminadorLinha, detectarTerminadorArquivo } = require('../src/utils/csv');
+
+test('detectarTerminadorLinha: \\r\\n, \\n e \\r', () => {
+  assert.equal(detectarTerminadorLinha('a,b\r\n1,2\r\n'), '\r\n');
+  assert.equal(detectarTerminadorLinha('﻿a,b\n1,2\n'), '\n');
+  assert.equal(detectarTerminadorLinha('a,b\r1,2\r'), '\r');
+  assert.equal(detectarTerminadorLinha('a,b\r'), '\r\n'); // \r no fim do trecho lido
+});
+
+test('detectarTerminadorLinha ignora quebras dentro de aspas no cabeçalho', () => {
+  assert.equal(detectarTerminadorLinha('"col\ncom quebra",b\r\n1,2'), '\r\n');
+  assert.equal(detectarTerminadorLinha('"a ""x""\r\n",b\n1,2'), '\n');
+});
+
+test('detectarTerminadorLinha sem quebra usa \\n (padrão anterior)', () => {
+  assert.equal(detectarTerminadorLinha('a,b,c'), '\n');
+  assert.equal(detectarTerminadorLinha(''), '\n');
+});
+
+test('detectarTerminadorArquivo lê só o início do arquivo', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'terminador-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'crlf.csv'), 'a,b\r\n' + '1,2\n'.repeat(10));
+    fs.writeFileSync(path.join(dir, 'lf.csv'), 'a,b\n1,2\n');
+    assert.equal(detectarTerminadorArquivo(path.join(dir, 'crlf.csv')), '\r\n');
+    assert.equal(detectarTerminadorArquivo(path.join(dir, 'lf.csv')), '\n');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

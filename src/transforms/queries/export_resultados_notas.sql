@@ -8,7 +8,7 @@ SELECT
   WeightedDenominator,
   IsReleased,
   IsDropped,
-  IsExempt,
+  IsDeleted,
   LastModified,
   LastModifiedBy,
   Comments,

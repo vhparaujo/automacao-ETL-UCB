@@ -21,6 +21,7 @@ manual de: baixar CSVs pelo AVA → rodar SQL → atualizar PowerBI.
 automacao-ETL-UCB/
 ├── CLAUDE.md                    ← este arquivo
 ├── README.md
+├── GUIA_ANALISTA.md             ← como criar queries/views (para analistas de dados)
 ├── package.json
 ├── .env                         ← credenciais (nunca commitar)
 ├── .env.example                 ← template público
@@ -57,7 +58,12 @@ automacao-ETL-UCB/
 │       ├── nomes.js             ← normalização de nomes (acentos/caixa/espaço/_/-) + encontrarSchema()
 │       ├── datas.js             ← datas relativas dos filtros ADS ("hoje", "-180d", "inicio_semestre"…)
 │       ├── bds-extracts.js      ← escolhe o extract BDS mais recente por CreatedDate
-│       └── falha-auth.js        ← detecta refresh token inválido e grava logs/ULTIMA_FALHA_AUTH.txt
+│       ├── falha-auth.js        ← detecta refresh token inválido e grava logs/ULTIMA_FALHA_AUTH.txt
+│       ├── ads-config.js        ← slug(), nomeArquivoADS() (arquivo_csv), montarFiltros(), compararFiltros()
+│       ├── ads-filtros.js       ← npm run ads:filtros — filtros declarados por cada ADS vs. config
+│       ├── pasta-csvs.js        ← listarCsvs(), arquivarCsvsAnteriores() (csvs/_anterior/)
+│       ├── inventario.js        ← npm run inventario → exports/_inventario_csvs.md
+│       └── zip.js               ← extrairCsvs(): extração de ZIP em streaming (ZIP64, CSVs de vários GB)
 │
 ├── config/
 │   ├── ads-filters.json         ← filtros dos ADS (editável)
@@ -176,6 +182,9 @@ GET extract.DownloadLink
 #   o Bearer só é enviado para hosts da UCB/Brightspace)
 
 # 5. Salvar em csvs/zips/, extrair os .csv para csvs/ e apagar o ZIP
+#    extrairCsvs() (src/utils/zip.js): streaming com zlib + ZIP64 — memória constante.
+#    NÃO voltar para adm-zip na extração: ele monta o CSV inteiro num Buffer e quebra
+#    no SystemAccessLog (ZIP 1,2 GB → CSV 7,4 GB: "Cannot create a Buffer larger than…").
 ```
 
 > Os endpoints antigos `/dataExport/bds/list`, `/dataExport/bds/(pluginId)`,
@@ -236,8 +245,12 @@ HEAD /d2l/api/lp/(version)/dataExport/download/(exportJobId)
 GET /d2l/api/lp/(version)/dataExport/download/(exportJobId)
 ```
 
-Todas as chaves do relatório em `ads-filters.json`, exceto `ativo` e `automatico`, viram
-`Filters` (arrays são unidos por vírgula).
+Todas as chaves do relatório em `ads-filters.json`, exceto `ativo`, `automatico`, `arquivo_csv` e
+as iniciadas por `_`, viram `Filters` (`montarFiltros()`; arrays são unidos por vírgula). Cada ADS
+declara filtros próprios em `DataSetData.Filters` (`Name`, `Type` 1–5, `Description`,
+`DefaultValue`) — confira com `npm run ads:filtros`. O CSV é salvo como `nomeArquivoADS()`:
+`arquivo_csv` ou `slug(nome)`; os nomes `notas_finais`, `uso_do_aluno` e `uso_do_instrutor` não
+podem mudar (schemas.json e queries dependem deles).
 
 ### Arquivo de configuração: config/ads-filters.json
 
@@ -297,11 +310,13 @@ strings como "Professor" com erro 400.
 //    chave exata → chave normalizada → "aliases" normalizados.
 //    a. Com schema: DROP + CREATE TABLE com as colunas/tipos do schema (colunas extras do CSV
 //       são ignoradas); nome da tabela = "tabela" do schema.
-//    b. Sem schema: loga "⚠️  Sem schema fixo para "<arquivo>" — usando inferência de tipos",
-//       infere tipos pelo nome da coluna, trunca nomes para 64 chars e desambigua colisões
-//       com _2, _3… (aviso no log); CREATE TABLE IF NOT EXISTS + TRUNCATE.
+//    b. Sem schema: TODAS as colunas TEXT (tipoColuna() só com INFERIR_TIPOS=true), log
+//       "🔍 Sem schema fixo para … carregada com todas as colunas TEXT"; trunca nomes para
+//       64 chars e desambigua colisões com _2, _3…; se a tabela existe com outra estrutura,
+//       DROP + CREATE; com a mesma estrutura, só TRUNCATE.
+//    Só lê os .csv do nível de cima de csvs/ (ignora csvs/_anterior/ e csvs/zips/).
 // 3. LOAD DATA LOCAL INFILE com variáveis posicionais (@col_0, @col_1, …) e
-//    SET coluna = NULLIF(@col_N, '').
+//    SET coluna = NULLIF(@col_N, '') — booleanos: CASE TRUE/FALSE → 1/0 (expressaoValor()).
 // 4. Log: tabela, linhas, tempo (📋 = schema fixo, 🔍 = inferido).
 //
 // Conexão mysql2 usa infileStreamFactory (habilita LOCAL INFILE no cliente).
@@ -323,6 +338,18 @@ strings como "Professor" com erro 400.
   (ex.: em português). Casamento ignora acentos, caixa, espaços, `_` e `-`.
 - Entradas sem `aliases` continuam funcionando como antes (casamento exato ou normalizado).
 - Para adicionar um alias: veja o nome real do CSV em `csvs/` e inclua em `aliases`.
+- Coluna: `"Nome no CSV": "TIPO"` ou `"Nome no CSV": { "tipo": "TIPO", "coluna": "nome na tabela" }`
+  (para nomes > 64 chars, ex.: colunas SCORM do `uso_do_aluno`). A tabela segue a ordem do schema.
+- `planejarColunasSchema()` casa cabeçalho × schema (exato, depois normalizado) e o loader avisa:
+  `⚠️ … coluna(s) do schema não existem no CSV (ficarão NULL)` / `ℹ️ … coluna(s) do CSV fora do schema`.
+  Os schemas devem bater 1:1 com os cabeçalhos reais (conferidos em 05/11/2026).
+- `"indices": [["UserId"], ["OrgUnitId", "RoleId"]]` (opcional): `montarSqlIndices()` cria um único
+  `ALTER TABLE … ADD INDEX …` DEPOIS do LOAD DATA (não UNIQUE; TEXT com prefixo 191; coluna inexistente →
+  aviso e índice ignorado). Depois de cada carga roda `ANALYZE TABLE` (todas as tabelas) — sem isso o
+  otimizador estimava errado e escolhia `hash join (no condition)` (consulta de 600 s+ → 2 s com índices).
+- Booleanos (`TINYINT(1)`/`BOOL`): `expressaoValor()` converte `TRUE`/`FALSE` (qualquer caixa) → 1/0 —
+  o MySQL (sql_mode='') gravava 0 para o texto. Vale também para tipos inferidos (INFERIR_TIPOS=true).
+- `Version` do Brightspace é `BIGINT` (passa de 2.147.483.647).
 
 ---
 
@@ -371,7 +398,12 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 //    c. "table":        executa o .sql (CREATE TABLE … AS SELECT …)
 // 3. exportarCsvs omitido → lê pipeline.exportar_csvs de config/schedule.json (padrão true)
 //
+// opcoes.somente (npm run transform -- --so nome[,nome]): roda só as nomeadas, na ordem do config,
+//    mesmo com ativo=false; exportar_csv sempre roda; nome inexistente → erro com sugestões.
+//    No pipeline, --so pula autenticação/download/carga (lerArgsSomente() em engine.js).
+//
 // O usuário adiciona .sql sem mexer no código: cria o arquivo e registra em config/transforms.json.
+// Guia para analistas: GUIA_ANALISTA.md (manter atualizado ao mudar loader/engine/schemas).
 ```
 
 ---
@@ -432,11 +464,13 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 //      loga "🔐 Refresh token inválido ou expirado — rode "npm run setup" para reautenticar",
 //      grava logs/ULTIMA_FALHA_AUTH.txt e ENCERRA sem as etapas seguintes (exit code 1 manual).
 //    • Sucesso: remove logs/ULTIMA_FALHA_AUTH.txt se existir.
-// 2. bds.download()            → baixar_bds
+//    • Pipeline completo (sem --apenas-*; também o cron): move csvs/ → csvs/_anterior/ antes de baixar.
+// 2. bds.download()            → baixar_bds (avisa nomes do bds-selecao.json ausentes na API, com sugestões)
 // 3. ads.download()            → baixar_ads
 // 4. load()                    → carregar_mysql
 // 5. engine.run({ exportarCsvs }) → executar_transformacoes (+ exportar_csvs)
 // 6. notificarViews(views)     → loga views prontas para o PowerBI
+//    + lista tabelas do MySQL não atualizadas nesta execução; inventário (só pipeline completo)
 // 7. Resumo: duração, datasets, tabelas, transformações executadas/puladas, erros
 //
 // Execução manual:
@@ -445,6 +479,7 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 // node src/pipeline.js --apenas-ads       → só baixa ADS
 // node src/pipeline.js --apenas-load      → só carrega no MySQL
 // node src/pipeline.js --apenas-transform → só transforma
+// node src/pipeline.js --apenas-transform --so vw_x → só a transformação vw_x, sem autenticar
 // node src/pipeline.js --watch            → agendamento com node-cron (npm start)
 ```
 
@@ -486,7 +521,7 @@ LOGS_DIR=./logs
     "node-cron": "^3.x",
     "dotenv": "^16.x",
     "csv-stringify": "^6.x",
-    "adm-zip": "^0.5.x"
+    "adm-zip": "^0.5.x"        ← só nos testes (criar ZIPs); a extração usa src/utils/zip.js
   }
 }
 ```
@@ -646,7 +681,9 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   "test":      "node --test",
   "db:up":     "docker compose up -d --wait",
   "db:down":   "docker compose stop",
-  "db:logs":   "docker compose logs -f mysql"
+  "db:logs":   "docker compose logs -f mysql",
+  "ads:filtros": "node src/utils/ads-filtros.js",
+  "inventario":  "node src/utils/inventario.js"
 }
 ```
 
