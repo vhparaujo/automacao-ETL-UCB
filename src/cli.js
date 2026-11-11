@@ -156,6 +156,7 @@ async function toggleADS() {
 function explicarFormatosData() {
   console.log('\n  📅 Datas aceitam:');
   console.log('     • YYYY-MM-DD           → data fixa (ex.: 2026-01-01)');
+  console.log('     • agora                → data e horário exatos da execução (UTC)');
   console.log('     • hoje                 → dia da execução (início 00:00 / fim 23:59:59.999 UTC)');
   console.log('     • -Nd                  → N dias atrás (ex.: -180d)');
   console.log('     • inicio_ano, fim_ano  → ano corrente');
@@ -173,7 +174,7 @@ async function perguntarData(rotulo, campo, padrao) {
       : entrada;
     try {
       const resolvida = resolverData(valor, campo, new Date());
-      if (resolvida !== valor) console.log(`     → hoje equivale a ${resolvida}`);
+      if (resolvida !== valor) console.log(`     → agora equivale a ${resolvida}`);
       return valor;
     } catch {
       console.log(`  ❌ Valor inválido. Use: YYYY-MM-DD, ${EXPRESSOES_VALIDAS}`);
@@ -192,7 +193,7 @@ async function adicionarADS() {
   const orgUnitId = (await perguntar(`OrgUnitId [6606]: `)).trim() || '6606';
   explicarFormatosData();
   const startDate = await perguntarData('Data início', 'inicio', '2025-01-01');
-  const endDate = await perguntarData('Data fim', 'fim', '2025-12-31');
+  const endDate = await perguntarData('Data fim', 'fim', 'agora');
   const rolesStr = await perguntar('IDs das roles (vírgula, ex: 109,110) ou Enter para pular: ');
   const roles = rolesStr.trim() ? rolesStr.split(',').map((r) => r.trim()) : [];
   const autoStr = await perguntar('Baixar automaticamente no pipeline? (s/N): ');
@@ -430,7 +431,7 @@ async function demandaADSEspecifico() {
     const orgUnitId = (await perguntar('OrgUnitId [6606]: ')).trim() || '6606';
     explicarFormatosData();
     const startDate = await perguntarData('Data início', 'inicio', '2025-01-01');
-    const endDate = await perguntarData('Data fim', 'fim', '2025-12-31');
+    const endDate = await perguntarData('Data fim', 'fim', 'agora');
     const rolesStr = await perguntar('IDs das roles (vírgula) ou Enter para pular: ');
     const roles = rolesStr.trim() ? rolesStr.split(',').map((r) => r.trim()) : [];
 

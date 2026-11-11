@@ -53,7 +53,25 @@ function requisicao(url, token, opcoes = {}) {
   });
 }
 
+// Status do ExportJob (API Brightspace): 0 na fila, 1 processando, 2 concluído, 3 erro, 4 apagado
+const STATUS_JOB = { 0: 'na fila', 1: 'processando', 2: 'concluído', 3: 'erro', 4: 'apagado' };
+
+function interpretarStatusJob(status) {
+  const descricao = `Status ${status} = ${STATUS_JOB[status] ?? 'desconhecido'}`;
+  return {
+    pronto: status === 2,
+    falhou: status === 3 || status === 4 || !(status in STATUS_JOB),
+    descricao,
+  };
+}
+
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// 965000 → "16 min 05s"
+function formatarMinutos(ms) {
+  const totalSeg = Math.floor(ms / 1000);
+  return `${Math.floor(totalSeg / 60)} min ${String(totalSeg % 60).padStart(2, '0')}s`;
+}
 
 function baixarArquivo(downloadUrl, destino, token) {
   return new Promise((resolve, reject) => {
@@ -101,7 +119,12 @@ async function listar() {
   return lista.map((r) => ({ nome: r.Name, dataSetId: r.DataSetId, versao }));
 }
 
-async function processarJob(nome, config, versao, token) {
+async function processarJob(nome, config, versao) {
+  // O access token dura 1 h e um job pode levar mais de 30 min: pede um token válido antes de
+  // cada chamada (getAccessToken() usa o cache e só renova quando falta < 60 s para expirar).
+  // Antes o token era obtido uma vez no início — numa execução de 44 min os últimos relatórios
+  // falhavam com HTTP 401.
+  let token = await getAccessToken();
   // Resolve datas relativas ("hoje", "-180d", "inicio_semestre"…) no momento da execução.
   // Expressão inválida lança erro aqui — download() registra e segue para o próximo relatório.
   // Nome do CSV de saída (valida "arquivo_csv" antes de criar o job)
@@ -137,36 +160,26 @@ async function processarJob(nome, config, versao, token) {
   console.log(`      Job criado (ID: ${jobId}), aguardando...`);
 
   const inicio = Date.now();
-  let tentativas = 0;
 
   while (Date.now() - inicio < POLLING_TIMEOUT) {
     await sleep(POLLING_INTERVALO);
-    tentativas++;
-    process.stdout.write(`\r      🔄 Processando... (${tentativas * (POLLING_INTERVALO / 1000)}s)   `);
+    token = await getAccessToken();
+    process.stdout.write(`\r      🔄 Processando... (${formatarMinutos(Date.now() - inicio)})   `);
 
-    // 404 = ainda processando; 200 = pronto (o próprio GET retorna o ZIP)
-    const pronto = await new Promise((resolve, reject) => {
-      const parsed = new URL(downloadUrl);
-      const req = https.request(
-        {
-          hostname: parsed.hostname,
-          path: parsed.pathname + parsed.search,
-          method: 'HEAD',
-          headers: { Authorization: `Bearer ${token}` },
-        },
-        (res) => {
-          if (res.statusCode === 404) return resolve(false);
-          if (res.statusCode === 200) return resolve(true);
-          reject(new Error(`HTTP ${res.statusCode} ao verificar status do job`));
-        }
-      );
-      req.on('error', reject);
-      req.end();
-    });
+    // Status real do job (GET /dataExport/jobs/{id}). Antes usávamos HEAD no download (404 = processando),
+    // mas um job com ERRO também devolve 404 para sempre — o código esperava os 30 min à toa.
+    const { Status } = await requisicao(`${HOST}/d2l/api/lp/${versao}/dataExport/jobs/${jobId}`, token);
+    const status = interpretarStatusJob(Status);
+    if (status.falhou) {
+      process.stdout.write('\n');
+      throw new Error(`Brightspace não conseguiu gerar o relatório (job ${jobId}: ${status.descricao}) — tente um período menor`);
+    }
+    const pronto = status.pronto;
 
     if (pronto) {
       process.stdout.write('\n');
       const zipPath = path.join(ZIPS_DIR, `ADS_${path.basename(nomeFixo, '.csv')}.zip`);
+      token = await getAccessToken();
       await baixarArquivo(downloadUrl, zipPath, token);
 
       await extrairCsvs(zipPath, CSVS_DIR, () => nomeFixo); // streaming, salva com o nome fixo
@@ -210,7 +223,7 @@ async function download(opcoes = {}) {
     return { processados: 0, erros: 0 };
   }
 
-  const token = await getAccessToken();
+  await getAccessToken(); // valida a autenticação antes de começar
   const versao = await obterVersaoLP();
   const label = modo === 'auto' ? 'automáticos' : modo === 'todos' ? 'todos' : 'selecionados';
 
@@ -218,26 +231,28 @@ async function download(opcoes = {}) {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   let processados = 0, erros = 0;
+  const falhas = []; // { nome, mensagem } — o pipeline grava no log
 
   for (const [nome, config] of relatorios) {
     console.log(`\n  🚀 ${nome}`);
     try {
-      const arquivo = await processarJob(nome, config, versao, token);
+      const arquivo = await processarJob(nome, config, versao);
       console.log(`  ✅ ${nome} — extraído para ${path.join(CSVS_DIR, arquivo)}`);
       processados++;
     } catch (e) {
       console.log(`  ❌ ${e.message.substring(0, 150)}`);
+      falhas.push({ nome, mensagem: e.message.substring(0, 300) });
       erros++;
     }
   }
 
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`✅ ADS: ${processados} processados, ${erros} erros`);
-  return { processados, erros };
+  return { processados, erros, falhas };
 }
 
 if (require.main === module) {
   download().catch((e) => { console.error('❌', e.message); process.exit(1); });
 }
 
-module.exports = { download, listar, listarBruto };
+module.exports = { download, listar, listarBruto, interpretarStatusJob };

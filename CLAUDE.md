@@ -235,11 +235,12 @@ Body: {
 }
 # → { ExportJobId, ... }
 
-# 3. Polling com HEAD a cada 10s (timeout 30 min)
-HEAD /d2l/api/lp/(version)/dataExport/download/(exportJobId)
-#   404 = ainda processando
-#   200 = pronto
-#   outro status = erro
+# 3. Polling a cada 10s (timeout 30 min), token renovado a cada consulta
+GET /d2l/api/lp/(version)/dataExport/jobs/(exportJobId)   → { Status }
+#   0 = na fila, 1 = processando → continua esperando
+#   2 = concluído → baixa
+#   3 = erro, 4 = apagado → falha na hora (interpretarStatusJob())
+#   (NÃO usar HEAD no download: job com erro devolve 404 para sempre e parecia "processando")
 
 # 4. Download do ZIP (mesma URL, GET) → extrai o CSV como csvs/<nome_normalizado>.csv
 GET /d2l/api/lp/(version)/dataExport/download/(exportJobId)
@@ -262,7 +263,7 @@ podem mudar (schemas.json e queries dependem deles).
     "ativo": true,
     "parentOrgUnitId": "6606",
     "startDate": "inicio_semestre",
-    "endDate": "hoje",
+    "endDate": "agora",
     "roles": ["109"]
   }
 }
@@ -281,6 +282,7 @@ Resolvidas em `processarJob()` no momento da execução por `resolverPeriodo()`
 |-------|-----------|---------|
 | ISO com `Z` (ex.: `2026-01-01T00:00:00.000Z`) | mantido como está | mantido como está |
 | ISO com offset (`…-03:00`) | convertido para UTC/`Z` | convertido para UTC/`Z` |
+| `agora` | instante da execução | instante da execução (padrão de todos os ADS) |
 | `hoje` | hoje 00:00:00.000Z | hoje 23:59:59.999Z |
 | `-Nd` (ex.: `-180d`) | N dias atrás, 00:00:00.000Z | N dias atrás, 23:59:59.999Z |
 | `inicio_ano` / `fim_ano` | 01/01 00:00:00.000Z | 31/12 23:59:59.999Z |
@@ -593,7 +595,7 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 - **Endpoints chamados pelo código** (lista completa):
   `GET /d2l/api/versions/` (versao-api.js) · `GET /d2l/api/lp/(v)/datasets/bds` + `Full.ExtractsLink` +
   `DownloadLink` (bds.js) · `GET /dataExport/list`, `POST /dataExport/create`,
-  `HEAD`/`GET /dataExport/download/(jobId)` (ads.js) · `GET /d2l/api/lp/(v)/roles/` (listar-roles.js) ·
+  `GET /dataExport/jobs/(jobId)`, `GET /dataExport/download/(jobId)` (ads.js) · `GET /d2l/api/lp/(v)/roles/` (listar-roles.js) ·
   `GET /d2l/api/lp/(v)/users/whoami` (oauth.js --test). Tokens: `auth.brightspace.com` (pacote brightspace-auth).
 - **Roles devem ser IDs numéricos** — nunca texto ("Professor", "Aluno"). Erro 400 se texto.
 - **POST requests exigem header `X-Csrf-Token`** — obtido via cookie ou endpoint dedicado.

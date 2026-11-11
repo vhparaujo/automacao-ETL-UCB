@@ -82,13 +82,18 @@ const FILTROS_API = {
 test('config/ads-filters.json só envia filtros que a API declara (sem ⚠️ filtro desconhecido)', () => {
   const raiz = path.join(__dirname, '..');
   const config = JSON.parse(fs.readFileSync(path.join(raiz, 'config/ads-filters.json'), 'utf8'));
-  for (const [nome, declarados] of Object.entries(FILTROS_API)) {
-    assert.ok(config[nome], `"${nome}" deve existir no config com o nome exato da API`);
-    const { desconhecidos } = compararFiltros(config[nome], declarados.map((Name) => ({ Name, Type: 1 })));
+  // Relatórios podem ser removidos do config (ex.: "Premiações emitidas" → usa-se o BDS AwardsIssued);
+  // os que estão lá precisam ter o nome exato da API e só filtros declarados por ela.
+  const relatorios = Object.keys(config).filter((k) => !k.startsWith('_'));
+  assert.ok(relatorios.length > 0, 'config sem relatórios');
+  for (const nome of relatorios) {
+    assert.ok(FILTROS_API[nome], `"${nome}" não é um ADS conhecido — confira o nome exato com npm run ads:filtros`);
+    const { desconhecidos } = compararFiltros(config[nome], FILTROS_API[nome].map((Name) => ({ Name, Type: 1 })));
     assert.deepEqual(desconhecidos, [], nome);
   }
-  for (const nome of ['Todas as Notas', 'Premiações emitidas', 'Resultados da pesquisa']) {
-    assert.equal(config[nome].automatico, false, `${nome} continua sob demanda`);
+  // automatico/ativo são escolhas de quem opera o pipeline — o teste não fixa esses valores
+  for (const nome of relatorios) {
+    assert.equal(typeof config[nome].automatico, 'boolean', `${nome}: "automatico" deve ser true ou false`);
   }
 });
 
@@ -112,4 +117,12 @@ test('compararFiltros aponta desconhecidos, não configurados e diferença de ca
 test('compararFiltros tolera Filters ausente ou tipo desconhecido', () => {
   assert.deepEqual(compararFiltros({ startDate: 'x' }, undefined).desconhecidos, ['startDate']);
   assert.match(compararFiltros({}, [{ Name: 'a', Type: 99 }]).declarados[0].tipoNome, /desconhecido \(99\)/);
+});
+
+test('interpretarStatusJob: 0/1 aguarda, 2 pronto, 3/4/desconhecido falha', () => {
+  const ads = require('../src/extractors/ads');
+  for (const s of [0, 1]) assert.deepEqual([ads.interpretarStatusJob(s).pronto, ads.interpretarStatusJob(s).falhou], [false, false]);
+  assert.equal(ads.interpretarStatusJob(2).pronto, true);
+  for (const s of [3, 4, 9, undefined]) assert.equal(ads.interpretarStatusJob(s).falhou, true, String(s));
+  assert.match(ads.interpretarStatusJob(3).descricao, /Status 3 = erro/);
 });

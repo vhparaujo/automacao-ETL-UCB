@@ -5,6 +5,7 @@
 // Aceita datas ISO absolutas (comportamento original) ou expressões relativas,
 // resolvidas em relação a uma data de referência (normalmente "agora"):
 //
+//   "agora"            → instante exato da execução (ex.: 2026-11-11T14:32:07.512Z)
 //   "hoje"             → hoje 00:00:00.000Z (startDate) ou 23:59:59.999Z (endDate)
 //   "-Nd"              → N dias atrás, início ou fim do dia conforme o campo (ex.: "-180d")
 //   "inicio_ano"       → 01/01 do ano corrente, 00:00:00.000Z
@@ -18,7 +19,7 @@
 const ISO_ABSOLUTA = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:?\d{2})$/;
 const DIAS_ATRAS = /^-(\d+)d$/;
 
-const EXPRESSOES_VALIDAS = 'hoje, -Nd (ex.: -180d), inicio_ano, fim_ano, inicio_semestre, fim_semestre ou data ISO (2026-01-01T00:00:00.000Z)';
+const EXPRESSOES_VALIDAS = 'agora, hoje, -Nd (ex.: -180d), inicio_ano, fim_ano, inicio_semestre, fim_semestre ou data ISO (2026-01-01T00:00:00.000Z)';
 
 function inicioDoDia(ano, mes, dia) {
   return new Date(Date.UTC(ano, mes, dia, 0, 0, 0, 0)).toISOString();
@@ -52,6 +53,7 @@ function resolverData(valor, campo, referencia = new Date()) {
     return d.toISOString(); // converte offset (-03:00) para UTC com Z
   }
 
+  if (expr === 'agora') return referencia.toISOString();
   if (expr === 'hoje') return borda(ano, mes, dia);
 
   const m = expr.match(DIAS_ATRAS);

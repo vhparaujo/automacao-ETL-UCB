@@ -112,7 +112,7 @@ Submenu com 3 opções:
 
 **[3] Adicionar novo relatório ADS**
 - Solicita: nome do relatório (como aparece no Brightspace), OrgUnitId, período (data início/fim), IDs das roles
-- As datas aceitam `YYYY-MM-DD` ou expressões relativas (`hoje`, `-180d`, `inicio_semestre`…) — ver [Datas relativas nos filtros ADS](#datas-relativas-nos-filtros-ads)
+- As datas aceitam `YYYY-MM-DD` ou expressões relativas (`agora`, `hoje`, `-180d`, `inicio_semestre`…) — ver [Datas relativas nos filtros ADS](#datas-relativas-nos-filtros-ads)
 - Pergunta se deve rodar automaticamente no pipeline
 - Salva em `config/ads-filters.json`
 
@@ -237,6 +237,7 @@ Em `config/ads-filters.json`, `startDate` e `endDate` aceitam datas ISO em UTC (
 
 | Valor | `startDate` | `endDate` |
 |-------|-------------|-----------|
+| `agora` | instante exato da execução | instante exato da execução (ex.: `2026-11-11T14:32:07.512Z`) |
 | `hoje` | hoje 00:00:00.000Z | hoje 23:59:59.999Z |
 | `-Nd` (ex.: `-180d`) | N dias atrás, 00:00:00.000Z | N dias atrás, 23:59:59.999Z |
 | `inicio_ano` / `fim_ano` | 01/01 do ano corrente | 31/12 do ano corrente |
@@ -256,7 +257,7 @@ Exemplo:
   "ativo": true,
   "parentOrgUnitId": "6606",
   "startDate": "inicio_semestre",
-  "endDate": "hoje",
+  "endDate": "agora",
   "roles": ["109"]
 }
 ```

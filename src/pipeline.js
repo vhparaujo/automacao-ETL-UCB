@@ -120,6 +120,7 @@ async function executarPipeline(opcoes = {}) {
       log('INFO', 'Iniciando download ADS');
       resumo.ads = await downloadADS();
       log('INFO', `ADS: ${resumo.ads.processados} processados, ${resumo.ads.erros} erros`);
+      for (const f of resumo.ads.falhas || []) log('ERRO', `ADS "${f.nome}": ${f.mensagem}`);
       resumo.erros += resumo.ads.erros;
     }
 

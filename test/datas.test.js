@@ -26,6 +26,15 @@ test('"hoje" vira início ou fim do dia conforme o campo', () => {
   assert.equal(resolverData(' HOJE ', 'fim', REF_NOV), '2026-11-04T23:59:59.999Z');
 });
 
+test('"agora" retorna o instante exato da referência, em ambos os campos', () => {
+  assert.equal(resolverData('agora', 'fim', REF_NOV), '2026-11-04T06:00:00.000Z');
+  assert.equal(resolverData(' AGORA ', 'inicio', REF_NOV), '2026-11-04T06:00:00.000Z');
+  assert.deepEqual(resolverPeriodo({ startDate: 'inicio_semestre', endDate: 'agora' }, REF_NOV), {
+    startDate: '2026-07-01T00:00:00.000Z',
+    endDate: '2026-11-04T06:00:00.000Z',
+  });
+});
+
 test('"-Nd" retorna N dias atrás', () => {
   assert.equal(resolverData('-180d', 'inicio', REF_NOV), '2026-05-08T00:00:00.000Z');
   assert.equal(resolverData('-1d', 'fim', REF_NOV), '2026-11-03T23:59:59.999Z');
