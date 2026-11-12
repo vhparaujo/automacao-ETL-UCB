@@ -204,6 +204,7 @@ npm run cli         # Abrir CLI interativa
 npm run pipeline    # Rodar pipeline completo agora
 npm run bds         # Baixar apenas BDS
 npm run ads         # Baixar apenas ADS
+npm run ads -- --inicio 2026-08-01   # ADS com outro startDate (só nesta execução)
 npm run load        # Carregar CSVs no MySQL
 npm run transform   # Executar transformações SQL
 npm run transform -- --so vw_x   # Só a transformação vw_x (sem autenticar/baixar/carregar)
@@ -215,6 +216,7 @@ npm run db:up       # Subir o MySQL (Docker)
 npm run db:down     # Parar o MySQL (Docker)
 npm run db:logs     # Log do MySQL (Docker)
 npm run ads:filtros # Filtros que cada ADS aceita vs. config/ads-filters.json
+npm run ads:periodo -- --inicio 2026-08-01   # Grava novo startDate em todos os ADS
 npm run inventario  # Gerar exports/_inventario_csvs.md
 ```
 
@@ -263,6 +265,38 @@ Exemplo:
 ```
 
 Expressão inválida (ou início depois do fim) gera erro apenas naquele relatório; os demais continuam.
+
+#### Alterar o período no JSON pelo terminal (`npm run ads:periodo`)
+
+Para mudar `startDate`/`endDate` **gravando** em `config/ads-filters.json` (vale para as próximas
+execuções e para o agendamento), sem abrir o arquivo no servidor:
+
+```bash
+npm run ads:periodo                                          # mostra o período atual de cada ADS
+npm run ads:periodo -- --inicio 2026-08-01                   # startDate de TODOS os ADS
+npm run ads:periodo -- --inicio inicio_semestre --fim agora  # início e fim
+npm run ads:periodo -- --inicio -30d --so "Uso do Aluno,Notas finais"   # só esses relatórios
+```
+
+Só altera os relatórios que já têm a chave. Valor inválido, nome de relatório inexistente ou início
+depois do fim → erro e **nada é gravado**. A gravação é atômica (arquivo temporário + rename).
+Não precisa de autenticação nem de MySQL.
+
+#### Trocar o período só em uma execução (`--inicio` / `--fim`)
+
+Para rodar com outro período **sem editar o JSON**, passe `--inicio` e/ou `--fim`. O valor substitui
+`startDate`/`endDate` de **todos** os ADS da execução (só nos que já têm esse filtro no config) e
+vale apenas para aquela execução — `config/ads-filters.json` não é alterado e o agendamento segue igual.
+
+```bash
+npm run ads -- --inicio 2026-08-01                 # todos os ADS a partir de 01/08
+npm run ads -- --inicio -30d --fim hoje            # últimos 30 dias
+npm run pipeline -- --inicio=inicio_semestre       # pipeline completo com outro início
+```
+
+Aceita os mesmos valores da tabela acima, além de `YYYY-MM-DD` (início do dia em `--inicio`, fim do
+dia em `--fim`). Valor inválido ou início depois do fim → erro antes de autenticar. Não combina com
+`--watch`. Na CLI ([5] → [1] ou [3]) há a pergunta "Data de início dos ADS".
 
 ### Schemas fixos e aliases
 

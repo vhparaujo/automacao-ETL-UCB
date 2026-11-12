@@ -307,8 +307,15 @@ async function rodarPipeline() {
   const flags = { '1': [], '2': ['--apenas-bds'], '3': ['--apenas-ads'], '4': ['--apenas-load'], '5': ['--apenas-transform'] };
   if (!flags[op]) return;
 
+  // Pipeline completo ou só ADS: permite trocar a data de início de todos os ADS nesta execução
+  const args = [...flags[op]];
+  if (op === '1' || op === '3') {
+    const inicio = (await perguntar('  Data de início dos ADS (ex.: 2026-08-01, -30d, inicio_semestre — Enter = usar o config): ')).trim();
+    if (inicio) args.push('--inicio', inicio);
+  }
+
   console.log('\n' + '─'.repeat(42) + '\n');
-  const proc = spawn('node', ['src/pipeline.js', ...flags[op]], { stdio: 'inherit' });
+  const proc = spawn('node', ['src/pipeline.js', ...args], { stdio: 'inherit' });
   await new Promise((r) => proc.on('close', r));
   await perguntar('\nPressione Enter para voltar...');
 }

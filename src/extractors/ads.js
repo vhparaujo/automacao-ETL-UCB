@@ -8,7 +8,7 @@ const { pipeline } = require('node:stream/promises');
 const { extrairCsvs } = require('../utils/zip');
 const { getAccessToken } = require('../auth/oauth');
 const { obterVersaoLP } = require('../utils/versao-api');
-const { resolverPeriodo } = require('../utils/datas');
+const { resolverPeriodo, lerArgsPeriodo } = require('../utils/datas');
 const { mesmoNome } = require('../utils/nomes');
 const { montarFiltros, nomeArquivoADS } = require('../utils/ads-config');
 
@@ -119,6 +119,17 @@ async function listar() {
   return lista.map((r) => ({ nome: r.Name, dataSetId: r.DataSetId, versao }));
 }
 
+// Aplica o período passado por --inicio/--fim. Só sobrescreve campos que o relatório já tem no
+// config — não inventa startDate/endDate num ADS que não declara esses filtros.
+function aplicarPeriodo(config, periodo) {
+  if (!periodo) return config;
+  const efetivo = { ...config };
+  for (const chave of ['startDate', 'endDate']) {
+    if (periodo[chave] !== undefined && config[chave] !== undefined) efetivo[chave] = periodo[chave];
+  }
+  return efetivo;
+}
+
 async function processarJob(nome, config, versao) {
   // O access token dura 1 h e um job pode levar mais de 30 min: pede um token válido antes de
   // cada chamada (getAccessToken() usa o cache e só renova quando falta < 60 s para expirar).
@@ -196,6 +207,8 @@ async function processarJob(nome, config, versao) {
 //   'auto'    → apenas os com automatico: true no config
 //   'todos'   → todos os ativos
 //   'selecao' → lista de nomes passada em opcoes.nomes
+// opcoes.periodo: { startDate?, endDate? } vindo de --inicio/--fim — vale para todos os relatórios
+// desta execução, sem alterar config/ads-filters.json.
 async function download(opcoes = {}) {
   const modo = opcoes.modo || 'auto';
   fs.mkdirSync(CSVS_DIR, { recursive: true });
@@ -228,6 +241,10 @@ async function download(opcoes = {}) {
   const label = modo === 'auto' ? 'automáticos' : modo === 'todos' ? 'todos' : 'selecionados';
 
   console.log(`\n📊 ADS — Baixando ${relatorios.length} relatório(s) ${label} (API LP ${versao})...`);
+  if (opcoes.periodo) {
+    const p = opcoes.periodo;
+    console.log(`  🗓️  Período sobrescrito pela linha de comando: início = ${p.startDate ?? '(do config)'}, fim = ${p.endDate ?? '(do config)'}`);
+  }
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   let processados = 0, erros = 0;
@@ -236,11 +253,11 @@ async function download(opcoes = {}) {
   for (const [nome, config] of relatorios) {
     console.log(`\n  🚀 ${nome}`);
     try {
-      const arquivo = await processarJob(nome, config, versao);
+      const arquivo = await processarJob(nome, aplicarPeriodo(config, opcoes.periodo), versao);
       console.log(`  ✅ ${nome} — extraído para ${path.join(CSVS_DIR, arquivo)}`);
       processados++;
     } catch (e) {
-      console.log(`  ❌ ${e.message.substring(0, 150)}`);
+      console.log(`  ❌ ${e.message.substring(0, 300)}`);
       falhas.push({ nome, mensagem: e.message.substring(0, 300) });
       erros++;
     }
@@ -252,7 +269,11 @@ async function download(opcoes = {}) {
 }
 
 if (require.main === module) {
-  download().catch((e) => { console.error('❌', e.message); process.exit(1); });
+  // node src/extractors/ads.js [--inicio <data>] [--fim <data>]
+  let periodo;
+  try { periodo = lerArgsPeriodo(process.argv.slice(2)); }
+  catch (e) { console.error('❌', e.message); process.exit(1); }
+  download({ periodo }).catch((e) => { console.error('❌', e.message); process.exit(1); });
 }
 
-module.exports = { download, listar, listarBruto, interpretarStatusJob };
+module.exports = { download, listar, listarBruto, interpretarStatusJob, aplicarPeriodo };

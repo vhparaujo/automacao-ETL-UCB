@@ -61,6 +61,7 @@ automacao-ETL-UCB/
 │       ├── falha-auth.js        ← detecta refresh token inválido e grava logs/ULTIMA_FALHA_AUTH.txt
 │       ├── ads-config.js        ← slug(), nomeArquivoADS() (arquivo_csv), montarFiltros(), compararFiltros()
 │       ├── ads-filtros.js       ← npm run ads:filtros — filtros declarados por cada ADS vs. config
+│       ├── ads-periodo.js       ← npm run ads:periodo — grava startDate/endDate no ads-filters.json
 │       ├── pasta-csvs.js        ← listarCsvs(), arquivarCsvsAnteriores() (csvs/_anterior/)
 │       ├── inventario.js        ← npm run inventario → exports/_inventario_csvs.md
 │       └── zip.js               ← extrairCsvs(): extração de ZIP em streaming (ZIP64, CSVs de vários GB)
@@ -292,6 +293,14 @@ Resolvidas em `processarJob()` no momento da execução por `resolverPeriodo()`
   roda às 06:00 UTC, mesmo dia).
 - Expressão inválida ou período invertido → erro só naquele relatório; os demais continuam.
 - Configs antigas (datas ISO absolutas) continuam funcionando sem alteração.
+- `YYYY-MM-DD` também é aceito (início/fim do dia UTC conforme o campo).
+- **Gravar no JSON pelo terminal:** `npm run ads:periodo -- --inicio <valor> [--fim <valor>] [--so "Nome,Nome"]`
+  (`src/utils/ads-periodo.js`, `atualizarPeriodos()` pura e testada). Sem argumentos lista o período atual.
+  Só altera relatórios que já têm a chave; erro (valor, nome, período invertido) → nada é gravado; escrita atômica.
+- **Só nesta execução:** `--inicio <valor>` / `--fim <valor>` (`lerArgsPeriodo()` em `datas.js`) sobrescrevem
+  `startDate`/`endDate` de todos os ADS da execução (`aplicarPeriodo()` em `ads.js` — só nos relatórios que já
+  têm a chave), sem gravar no JSON. Validados antes de autenticar; proibidos com `--watch`.
+  Ex.: `npm run ads -- --inicio 2026-08-01`, `npm run pipeline -- --inicio -30d --fim hoje`.
 
 ### Roles
 
@@ -479,6 +488,7 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 // node src/pipeline.js                    → roda tudo agora
 // node src/pipeline.js --apenas-bds       → só baixa BDS
 // node src/pipeline.js --apenas-ads       → só baixa ADS
+// node src/pipeline.js --apenas-ads --inicio 2026-08-01 [--fim hoje] → ADS com outro período (só nesta execução)
 // node src/pipeline.js --apenas-load      → só carrega no MySQL
 // node src/pipeline.js --apenas-transform → só transforma
 // node src/pipeline.js --apenas-transform --so vw_x → só a transformação vw_x, sem autenticar
@@ -685,6 +695,7 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   "db:down":   "docker compose stop",
   "db:logs":   "docker compose logs -f mysql",
   "ads:filtros": "node src/utils/ads-filtros.js",
+  "ads:periodo": "node src/utils/ads-periodo.js",
   "inventario":  "node src/utils/inventario.js"
 }
 ```
@@ -694,7 +705,7 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
 - `npm test` roda `node --test`, que descobre `test/**/*.test.js` (sem dependências extras).
   Usa-se `node --test` sem argumento de diretório porque `node --test test/` quebra no Node 22+.
 - Os testes não acessam MySQL nem Brightspace: módulos externos são mockados via `require.cache`.
-- Funções puras testadas: `src/utils/csv.js`, `nomes.js`, `datas.js`, `bds-extracts.js`,
+- Funções puras testadas: `src/utils/csv.js`, `nomes.js`, `datas.js` (inclui `lerArgsPeriodo`), `ads-periodo.js`, `bds-extracts.js`,
   `falha-auth.js`; `engine.run()` e o tratamento de falha de auth do pipeline com mocks.
 
 ---

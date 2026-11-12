@@ -50,7 +50,7 @@ function imprimirRelatorio(item, config) {
       console.log(`   ⚠️  filtro desconhecido: "${chave}"${sugestao} — a API não declara este filtro`);
     }
     for (const nome of naoConfigurados) {
-      console.log(`   ℹ️  não configurado — a API usará o padrão: "${nome}"`);
+      console.log(`   ℹ️  não configurado — "${nome}" não será enviado (se a API exigir, o job falha com 400)`);
     }
     if (desconhecidos.length === 0 && naoConfigurados.length === 0) {
       console.log('   ✅ config confere com os filtros declarados');

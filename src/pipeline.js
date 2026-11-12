@@ -19,6 +19,7 @@ const {
   limparFalhaAuth,
 } = require('./utils/falha-auth');
 const { gerarInventario } = require('./utils/inventario');
+const { lerArgsPeriodo } = require('./utils/datas');
 const { arquivarCsvsAnteriores, tabelasNaoAtualizadas, PASTA_ANTERIOR } = require('./utils/pasta-csvs');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
@@ -118,7 +119,7 @@ async function executarPipeline(opcoes = {}) {
     // ADS
     if (flags.ads) {
       log('INFO', 'Iniciando download ADS');
-      resumo.ads = await downloadADS();
+      resumo.ads = await downloadADS({ periodo: opcoes.periodoADS });
       log('INFO', `ADS: ${resumo.ads.processados} processados, ${resumo.ads.erros} erros`);
       for (const f of resumo.ads.falhas || []) log('ERRO', `ADS "${f.nome}": ${f.mensagem}`);
       resumo.erros += resumo.ads.erros;
@@ -220,8 +221,14 @@ if (require.main === module) {
   const args = process.argv.slice(2);
 
   let somente = null;
+  let periodoADS = null;
   try {
     somente = lerArgsSomente(args);
+    // --inicio/--fim: sobrescrevem startDate/endDate de todos os ADS só nesta execução
+    periodoADS = lerArgsPeriodo(args);
+    if (periodoADS && args.includes('--watch')) {
+      throw new Error('--inicio/--fim não valem com --watch (o agendamento usa config/ads-filters.json)');
+    }
   } catch (e) {
     console.error('❌', e.message);
     process.exit(1);
@@ -253,6 +260,10 @@ if (require.main === module) {
 
     // Sem --apenas-* = pipeline completo (arquiva csvs/ antes de baixar e roda o inventário no fim)
     opcoes.completo = !args.some((a) => a.startsWith('--apenas'));
+    opcoes.periodoADS = periodoADS;
+    if (periodoADS && !opcoes.ads) {
+      console.log('⚠️  --inicio/--fim ignorados: esta execução não baixa ADS');
+    }
 
     executarPipeline(opcoes)
       .then((resumo) => { if (resumo.falhaAuth) process.exitCode = 1; })
