@@ -84,7 +84,7 @@
 
   "GradeResults": {
     "tabela": "graderesults",
-    "indices": [["UserId"], ["OrgUnitId", "GradeObjectId"]],
+    "indices": [["UserId", "GradeObjectId"], ["OrgUnitId", "GradeObjectId"]],
     "colunas": {
       "GradeObjectId":       "INT",
       "OrgUnitId":           "INT",
@@ -134,13 +134,14 @@
       "CreatedBy":              "INT",
       "LastModifiedBy":         "INT",
       "DeletedBy":              "INT",
-      "AIUtilization":          "VARCHAR(100)"
+      "AIUtilization":          "VARCHAR(100)",
+      "Version":                "BIGINT"
     }
   },
 
   "UserEnrollments": {
     "tabela": "userenrollments",
-    "indices": [["UserId"], ["OrgUnitId", "RoleId"]],
+    "indices": [["UserId", "OrgUnitId"], ["OrgUnitId", "RoleId"]],
     "colunas": {
       "OrgUnitId":      "INT",
       "UserId":         "INT",
@@ -153,7 +154,7 @@
 
   "CourseAccessLog": {
     "tabela": "courseaccesslog",
-    "indices": [["UserId"], ["OrgUnitId"]],
+    "indices": [["UserId", "Timestamp"], ["OrgUnitId"]],
     "colunas": {
       "OrgUnitId": "INT",
       "UserId":    "INT",
@@ -174,7 +175,7 @@
 
   "SystemAccessLog": {
     "tabela": "systemaccesslog",
-    "indices": [["UserId"]],
+    "indices": [["UserId", "Timestamp"]],
     "colunas": {
       "SessionId":     "VARCHAR(100)",
       "UserId":        "INT",
@@ -191,7 +192,7 @@
   "DiscussionPosts": {
     "tabela": "discussionposts",
     "aliases": ["Posts de discussão"],
-    "indices": [["UserId"], ["OrgUnitId"]],
+    "indices": [["PostId"], ["UserId"], ["OrgUnitId"]],
     "colunas": {
       "OrgUnitId":       "INT",
       "TopicId":         "INT",

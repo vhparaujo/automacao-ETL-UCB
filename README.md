@@ -122,17 +122,41 @@ Submenu com 3 opções:
 
 ### [3] Configurar agendamento
 
-Define quando o pipeline roda automaticamente. Opções predefinidas:
+O `npm start` roda os agendamentos de `config/schedule.json` → `agendamentos`. Cada um diz o que baixar
+(`"bds": "completo" | "diferencial" | false`, `"ads": true | false`); carga no MySQL e transformações seguem
+`pipeline`. Padrão (alinhado aos horários em que o Brightspace da UCB gera os BDS):
 
-| Opção | Cron | Descrição |
-|-------|------|-----------|
-| [1] | `0 3 * * *` | Diário às 3h |
-| [2] | `0 3 * * 1,4` | Segunda e quinta às 3h |
-| [3] | `0 2 * * 0` | Todo domingo às 2h |
-| [4] | personalizado | Qualquer expressão cron |
-| [5] | — | Ativar ou desativar o agendamento |
+| Agendamento | Cron | O que roda |
+|-------------|------|-----------|
+| BDS diferencial + ADS | `0 6 * * *` | Todo dia 6h — BDS **diferencial do dia** (gerado ~5h20) + ADS + carga + transformações |
+| BDS completo | `0 9 * * 1` | Segunda 9h — BDS **completo** (gerado ~8h20) + carga + transformações |
 
-Configuração salva em `config/schedule.json`.
+Execuções que coincidirem (ex.: o das 6h de segunda ainda rodando às 9h) entram em fila. No menu:
+**[A]** ativa/desativa um agendamento, **[C]** troca o cron, **[P]** restaura o padrão.
+Reinicie o `npm start` depois de alterar. O formato antigo (um único `"agendamento"`) continua aceito
+como BDS completo + ADS.
+
+#### BDS completo × diferencial
+
+- **Completo:** sai 1x por semana (segunda) com a tabela inteira; é carregado como sempre (DROP + CREATE + LOAD).
+- **Diferencial:** sai todo dia com só as linhas **alteradas**, no mesmo CSV/colunas do completo. É aplicado
+  como *upsert*: carrega em uma tabela temporária `_dif_<tabela>`, apaga da tabela as linhas com a mesma
+  chave e insere as novas. As chaves estão em `config/bds-diferencial.json` (logs usam todas as colunas).
+- O download baixa **só o diferencial gerado hoje** (fuso de Brasília), em
+  `csvs/diferencial/` (mesmo nome do CSV do completo, ex.: `Users.csv`; o do dia seguinte sobrescreve) —
+  os de dias anteriores não são baixados. Se o de hoje ainda não
+  saiu, o dataset é pulado (`o diferencial de hoje ainda não foi gerado`). Na segunda depois das ~8h20 o
+  diferencial do dia já está no completo e também é pulado. A carga pula diferenciais já aplicados
+  (controle na tabela `_etl_bds_estado`).
+- **Dia perdido não é recuperado:** se o diferencial de um dia não foi aplicado (computador desligado, erro),
+  a carga do dia seguinte avisa (`⚠️ o diferencial anterior (…) não foi aplicado`) e as alterações dele
+  faltam até o completo de segunda — ou rode `npm run bds` + `npm run load` para corrigir na hora.
+- Se a tabela não estiver com o completo mais recente, a carga avisa
+  (`⚠️ o completo de … não foi carregado`) — rode `npm run bds` + `npm run load`.
+- O diferencial **não** traz exclusões físicas (ex.: desinscrição); exclusões lógicas (`IsDeleted`,
+  `DateDeleted`) chegam normalmente. O completo de segunda corrige o restante.
+- Dataset novo no `bds-selecao.json`: inclua a chave dele em `config/bds-diferencial.json`, senão o
+  diferencial dele não é aplicado (erro no log) e a tabela fica como no último completo.
 
 ---
 
@@ -162,10 +186,12 @@ Executa o pipeline manualmente, sem esperar o agendamento:
 | [3] Apenas ADS | `npm run ads` | Só baixa os ADS marcados como automáticos |
 | [4] Apenas carga MySQL | `npm run load` | Carrega os CSVs já baixados no MySQL |
 | [5] Apenas transformações | `npm run transform` | Executa as queries SQL configuradas |
+| [6] Pipeline com BDS diferencial | `npm run pipeline -- --diferencial` | Como [1], mas baixa o BDS diferencial do dia |
+| [7] Apenas BDS diferencial | `npm run bds:diferencial` | Só baixa o diferencial do dia (aplicado no próximo `npm run load`) |
 
 As etapas executadas no pipeline completo seguem `pipeline` em `config/schedule.json`. Com `"exportar_csvs": false`, as transformações do tipo `exportar_csv` são puladas (`⏭️  pulada (exportar_csvs = false)`), enquanto `view` e `table` continuam rodando; o resumo final mostra quantas foram puladas. Ao final das transformações, o pipeline lista as views atualizadas para o PowerBI.
 
-**`csvs/_anterior/`:** no pipeline completo (`npm run pipeline`, opção [1] e o agendamento), o conteúdo atual de `csvs/` é movido para `csvs/_anterior/` **antes** dos downloads — nada é apagado, mas só a última execução fica guardada (o `_anterior` antigo é substituído). Assim, um CSV baixado sob demanda semanas atrás não é recarregado toda noite. O loader e o inventário ignoram `csvs/_anterior/` e `csvs/zips/`. Execuções parciais (`--apenas-*`) e downloads sob demanda pela CLI **não** mexem na pasta. No fim, o resumo lista as tabelas do MySQL que **não** foram atualizadas nesta execução (o CSV delas não foi baixado).
+**`csvs/_anterior/`:** no pipeline completo (`npm run pipeline`, opção [1] e o agendamento), o conteúdo atual de `csvs/` é movido para `csvs/_anterior/` **antes** dos downloads — nada é apagado, mas só a última execução fica guardada (o `_anterior` antigo é substituído). Assim, um CSV baixado sob demanda semanas atrás não é recarregado toda noite. O loader e o inventário ignoram `csvs/_anterior/` e `csvs/zips/`; os diferenciais em `csvs/diferencial/` são aplicados pelo loader como upsert. Execuções parciais (`--apenas-*`) e downloads sob demanda pela CLI **não** mexem na pasta. No fim, o resumo lista as tabelas do MySQL que **não** foram atualizadas nesta execução (o CSV delas não foi baixado).
 
 ---
 
@@ -202,7 +228,8 @@ Se existir `logs/ULTIMA_FALHA_AUTH.txt`, mostra antes um alerta destacado de que
 npm run setup       # Configurar autenticação OAuth (primeiro uso)
 npm run cli         # Abrir CLI interativa
 npm run pipeline    # Rodar pipeline completo agora
-npm run bds         # Baixar apenas BDS
+npm run bds         # Baixar apenas BDS (completo)
+npm run bds:diferencial   # Baixar apenas o BDS diferencial do dia
 npm run ads         # Baixar apenas ADS
 npm run ads -- --inicio 2026-08-01   # ADS com outro startDate (só nesta execução)
 npm run load        # Carregar CSVs no MySQL
@@ -229,8 +256,9 @@ npm run inventario  # Gerar exports/_inventario_csvs.md
 | `.env` | Credenciais (nunca commitar) |
 | `config/ads-filters.json` | Filtros e configurações dos relatórios ADS |
 | `config/bds-selecao.json` | Lista de BDS para download automático |
+| `config/bds-diferencial.json` | Chave de cada BDS para aplicar o diferencial (upsert) |
 | `config/schemas.json` | Schemas fixos das tabelas (tipos, nome da tabela, `aliases`) |
-| `config/schedule.json` | Cron, agendamento e etapas do pipeline (`exportar_csvs` etc.) |
+| `config/schedule.json` | Agendamentos (cron + BDS completo/diferencial + ADS) e etapas do pipeline |
 | `config/transforms.json` | Transformações SQL a executar |
 
 ### Datas relativas nos filtros ADS

@@ -21,6 +21,7 @@ const {
 const { gerarInventario } = require('./utils/inventario');
 const { lerArgsPeriodo } = require('./utils/datas');
 const { arquivarCsvsAnteriores, tabelasNaoAtualizadas, PASTA_ANTERIOR } = require('./utils/pasta-csvs');
+const { lerAgendamentos, descreverEtapas } = require('./utils/agendamentos');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -62,10 +63,13 @@ async function executarPipeline(opcoes = {}) {
     transform: opcoes.transform ?? pipe.executar_transformacoes ?? true,
     exportarCsvs: opcoes.exportarCsvs ?? pipe.exportar_csvs ?? true,
   };
+  // BDS completo (padrão) ou diferencial (--diferencial / agendamento com "bds": "diferencial")
+  const tipoBDS = opcoes.bdsTipo || 'completo';
 
   console.log('\n🚀 Iniciando pipeline Brightspace ETL —', new Date().toLocaleString('pt-BR'));
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   log('INFO', `Pipeline iniciado. Log: ${logFile}`);
+  if (opcoes.agendamento) log('INFO', `Agendamento: ${opcoes.agendamento}`);
 
   const resumo = { bds: null, ads: null, load: null, transform: null, erros: 0, falhaAuth: false };
 
@@ -110,9 +114,10 @@ async function executarPipeline(opcoes = {}) {
 
     // BDS
     if (flags.bds) {
-      log('INFO', 'Iniciando download BDS');
-      resumo.bds = await downloadBDS();
-      log('INFO', `BDS: ${resumo.bds.baixados} baixados, ${resumo.bds.erros} erros`);
+      log('INFO', `Iniciando download BDS ${tipoBDS}`);
+      resumo.bds = await downloadBDS({ tipo: tipoBDS });
+      const difs = tipoBDS === 'diferencial' ? ` (${resumo.bds.arquivos || 0} diferencial(is))` : '';
+      log('INFO', `BDS ${tipoBDS}: ${resumo.bds.baixados} baixados${difs}, ${resumo.bds.erros} erros`);
       resumo.erros += resumo.bds.erros;
     }
 
@@ -130,6 +135,10 @@ async function executarPipeline(opcoes = {}) {
       log('INFO', 'Iniciando carga MySQL');
       resumo.load = await load();
       log('INFO', `MySQL: ${resumo.load.carregados} tabelas, ${resumo.load.totalLinhas} linhas`);
+      const dif = resumo.load.diferencial;
+      if (dif && (dif.aplicados || dif.pulados || dif.erros)) {
+        log('INFO', `Diferencial: ${dif.aplicados} aplicado(s) em ${dif.tabelas.join(', ') || '—'}, ${dif.pulados} pulado(s), ${dif.erros} erro(s)`);
+      }
       resumo.erros += resumo.load.erros;
 
       // Tabelas do banco cujo CSV não veio nesta execução (dados possivelmente defasados)
@@ -176,9 +185,15 @@ async function executarPipeline(opcoes = {}) {
 
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`✅ Pipeline concluído em ${min}m ${seg}s`);
-  if (resumo.bds) console.log(`   📦 BDS: ${resumo.bds.baixados} datasets`);
+  if (resumo.bds) {
+    const difs = resumo.bds.tipo === 'diferencial' ? ` (${resumo.bds.arquivos || 0} diferencial(is))` : '';
+    console.log(`   📦 BDS ${resumo.bds.tipo || 'completo'}: ${resumo.bds.baixados} datasets${difs}`);
+  }
   if (resumo.ads) console.log(`   📊 ADS: ${resumo.ads.processados} relatórios`);
   if (resumo.load) console.log(`   🗄️  MySQL: ${resumo.load.carregados} tabelas — ${(resumo.load.totalLinhas || 0).toLocaleString('pt-BR')} linhas`);
+  if (resumo.load?.diferencial?.aplicados) {
+    console.log(`   🔁 Diferencial: ${resumo.load.diferencial.aplicados} aplicado(s) → ${resumo.load.diferencial.tabelas.join(', ')}`);
+  }
   if (resumo.transform) {
     const puladas = resumo.transform.puladas ? ` | ⏭️  ${resumo.transform.puladas} puladas (exportar_csvs = false)` : '';
     console.log(`   🔧 Transformações: ${resumo.transform.executadas} executadas${puladas}`);
@@ -197,24 +212,65 @@ async function executarPipeline(opcoes = {}) {
   return resumo;
 }
 
+// Agendamentos de config/schedule.json → "agendamentos" (ver src/utils/agendamentos.js).
+// As execuções entram numa fila: se uma ainda estiver rodando (ex.: ADS das 6h às 9h de segunda),
+// a próxima espera ela terminar em vez de rodar junto e disputar csvs/ e o MySQL.
 function iniciarAgendamento() {
   const config = JSON.parse(fs.readFileSync('config/schedule.json', 'utf8'));
-  const ag = config.agendamento;
-
-  if (!ag || !ag.ativo) {
-    console.log('ℹ️  Agendamento desativado em config/schedule.json');
+  let lidos;
+  try {
+    lidos = lerAgendamentos(config);
+  } catch (e) {
+    console.error(`❌ config/schedule.json: ${e.message}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { fuso, agendamentos } = lidos;
+  const ativos = agendamentos.filter((ag) => ag.ativo);
+  if (ativos.length === 0) {
+    console.log('ℹ️  Nenhum agendamento ativo em config/schedule.json');
     return;
   }
 
-  const tz = ag.fuso_horario || 'America/Sao_Paulo';
-  console.log(`\n⏰ Agendamento ativo: "${ag.descricao}" (${ag.cron}) — fuso: ${tz}`);
-  console.log('   Pipeline rodará automaticamente conforme configurado.');
-  console.log('   Pressione Ctrl+C para encerrar.\n');
+  for (const ag of ativos) {
+    if (!cron.validate(ag.cron)) {
+      console.error(`❌ Agendamento "${ag.nome}": cron inválido "${ag.cron}"`);
+      process.exitCode = 1;
+      return;
+    }
+  }
 
-  cron.schedule(ag.cron, () => {
-    console.log(`\n⏰ Agendamento disparado: ${new Date().toLocaleString('pt-BR')}`);
-    executarPipeline({ completo: true }).catch((e) => console.error('❌ Erro no agendamento:', e.message));
-  }, { timezone: tz });
+  const pipe = config.pipeline || {};
+  let fila = Promise.resolve();
+  let emExecucao = null;
+
+  console.log(`\n⏰ ${ativos.length} agendamento(s) ativo(s) — fuso: ${fuso}`);
+  for (const ag of ativos) {
+    console.log(`   • ${ag.nome.padEnd(24)} ${ag.cron.padEnd(16)} → ${descreverEtapas(ag)}${ag.descricao ? ` — ${ag.descricao}` : ''}`);
+
+    cron.schedule(ag.cron, () => {
+      console.log(`\n⏰ Agendamento "${ag.nome}" disparado: ${new Date().toLocaleString('pt-BR')}`);
+      if (emExecucao) console.log(`   ⏳ Aguardando "${emExecucao}" terminar...`);
+      fila = fila.then(async () => {
+        emExecucao = ag.nome;
+        try {
+          await executarPipeline({
+            completo: true,
+            agendamento: ag.nome,
+            // As flags de config/schedule.json → pipeline continuam valendo como chave geral
+            bds: Boolean(ag.bds) && (pipe.baixar_bds ?? true),
+            bdsTipo: ag.bds || 'completo',
+            ads: ag.ads && (pipe.baixar_ads ?? true),
+          });
+        } catch (e) {
+          console.error(`❌ Erro no agendamento "${ag.nome}":`, e.message);
+        } finally {
+          emExecucao = null;
+        }
+      });
+    }, { timezone: fuso });
+  }
+  console.log('\n   Pressione Ctrl+C para encerrar.\n');
 }
 
 if (require.main === module) {
@@ -261,6 +317,8 @@ if (require.main === module) {
     // Sem --apenas-* = pipeline completo (arquiva csvs/ antes de baixar e roda o inventário no fim)
     opcoes.completo = !args.some((a) => a.startsWith('--apenas'));
     opcoes.periodoADS = periodoADS;
+    // --diferencial: baixa o BDS diferencial do dia em vez do completo
+    opcoes.bdsTipo = args.includes('--diferencial') ? 'diferencial' : 'completo';
     if (periodoADS && !opcoes.ads) {
       console.log('⚠️  --inicio/--fim ignorados: esta execução não baixa ADS');
     }

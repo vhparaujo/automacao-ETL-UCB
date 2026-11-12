@@ -8,6 +8,9 @@ const mysql = require('mysql2/promise');
 const { parseLinhaCSV, nomesColunasUnicos, detectarTerminadorArquivo } = require('../utils/csv');
 const { encontrarSchema, mesmoNome, normalizarNome } = require('../utils/nomes');
 const { listarCsvs } = require('../utils/pasta-csvs');
+const {
+  TABELA_ESTADO, listarDiferenciais, lerManifesto, encontrarChave, decidirAplicacao, montarSqlMerge, nomeStaging,
+} = require('../utils/bds-diferencial');
 
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 
@@ -208,13 +211,14 @@ async function criarOuRecriarTabela(conn, tabela, colunas, definicoesSchema) {
   return atual.length > 0; // true = existia com outra estrutura
 }
 
-async function carregarCSV(conn, csvPath, schemas) {
+// Lê o cabeçalho e planeja a carga de um CSV: tabela, colunas e expressões do LOAD DATA.
+// Usado pela carga completa (carregarCSV) e pelo diferencial (aplicarDiferencialCSV).
+async function planejarCarga(csvPath, schemas) {
   const base = nomeCsvBase(csvPath);
   // Casamento normalizado (sem acento/case, ignora espaço, _ e -) + "aliases" do schemas.json
   const schemaEntry = encontrarSchema(base, schemas)?.schema;
   const tabela = nomeTabela(csvPath, schemaEntry);
   const colunas = await lerCabecalhoCSV(csvPath);
-  const absPath = path.resolve(csvPath).replace(/\\/g, '/');
   const avisos = [];
 
   if (!schemaEntry) {
@@ -248,21 +252,27 @@ async function carregarCSV(conn, csvPath, schemas) {
   }
 
   const colunasSemSchema = plano ? null : definirColunasSemSchema(nomesInferidos, inferirTiposAtivo());
-  const recriada = await criarOuRecriarTabela(conn, tabela, nomesInferidos, plano?.definicoes);
-  if (!schemaEntry?.colunas && recriada) {
-    avisos.push(`♻️  Estrutura de "${tabela}" mudou (colunas ou tipos) — tabela recriada`);
-  }
 
-  // Variáveis posicionais evitam o limite de 64 chars do MySQL em nomes de identificadores
-  const vars = colunas.map((_, i) => `@col_${i}`).join(', ');
-
-  const sets = plano
+  // Colunas efetivamente preenchidas pelo LOAD DATA: [{ indice (posição no CSV), nome, tipo }]
+  const preenchidas = plano
     ? plano.mapeamento
-        .map((m) => `\`${m.nome}\` = ${expressaoValor(`@col_${m.indice}`, m.tipo)}`)
-        .join(',\n  ')
-    : colunasSemSchema
-        .map((c, i) => `\`${c.nome}\` = ${expressaoValor(`@col_${i}`, c.tipo)}`)
-        .join(',\n  ');
+    : colunasSemSchema.map((c, i) => ({ indice: i, nome: c.nome, tipo: c.tipo }));
+
+  return {
+    base, schemaEntry, tabela, colunas, nomesInferidos, plano, colunasSemSchema, preenchidas, avisos,
+    // Estrutura esperada da tabela (CREATE TABLE): schema na ordem do schema; sem schema = cabeçalho
+    definicoes: plano ? plano.definicoes : colunasSemSchema,
+  };
+}
+
+// LOAD DATA LOCAL INFILE do CSV para a tabela indicada (a tabela já existe)
+async function executarLoadData(conn, csvPath, tabela, planejamento) {
+  const absPath = path.resolve(csvPath).replace(/\\/g, '/');
+  // Variáveis posicionais evitam o limite de 64 chars do MySQL em nomes de identificadores
+  const vars = planejamento.colunas.map((_, i) => `@col_${i}`).join(', ');
+  const sets = planejamento.preenchidas
+    .map((m) => `\`${m.nome}\` = ${expressaoValor(`@col_${m.indice}`, m.tipo)}`)
+    .join(',\n  ');
 
   // Os CSVs do Brightspace usam \r\n. Com LINES TERMINATED BY '\n' o \r ficava grudado na
   // última coluna (e vazio virava "\r" em vez de NULL). Detecta o terminador real do arquivo.
@@ -279,9 +289,21 @@ async function carregarCSV(conn, csvPath, schemas) {
     (${vars})
     SET ${sets};
   `;
+  const [result] = await conn.query(sql);
+  return result.affectedRows || 0;
+}
+
+async function carregarCSV(conn, csvPath, schemas) {
+  const plan = await planejarCarga(csvPath, schemas);
+  const { schemaEntry, tabela, plano, avisos } = plan;
+
+  const recriada = await criarOuRecriarTabela(conn, tabela, plan.nomesInferidos, plano?.definicoes);
+  if (!schemaEntry?.colunas && recriada) {
+    avisos.push(`♻️  Estrutura de "${tabela}" mudou (colunas ou tipos) — tabela recriada`);
+  }
 
   const inicio = Date.now();
-  const [result] = await conn.query(sql);
+  const linhas = await executarLoadData(conn, csvPath, tabela, plan);
 
   // Índices do schema (a tabela com schema é sempre recriada, então eles também)
   if (plano && schemaEntry.indices) {
@@ -302,7 +324,193 @@ async function carregarCSV(conn, csvPath, schemas) {
 
   const duracao = ((Date.now() - inicio) / 1000).toFixed(1);
 
-  return { tabela, linhas: result.affectedRows || 0, duracao, schemaFixo: !!schemaEntry, avisos };
+  return { tabela, linhas, duracao, schemaFixo: !!schemaEntry, avisos };
+}
+
+// ── BDS diferencial ────────────────────────────────────────────────
+
+function carregarChavesDiferencial() {
+  try {
+    return JSON.parse(fs.readFileSync('config/bds-diferencial.json', 'utf8')).chaves || {};
+  } catch {
+    return {};
+  }
+}
+
+async function garantirTabelaEstado(conn) {
+  await conn.query(
+    `CREATE TABLE IF NOT EXISTS \`${TABELA_ESTADO}\` (
+      tabela VARCHAR(64) NOT NULL PRIMARY KEY,
+      dataset VARCHAR(255),
+      completo_criado VARCHAR(40),
+      diferencial_criado VARCHAR(40),
+      atualizado_em DATETIME
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+  );
+}
+
+async function lerEstado(conn, tabela) {
+  const [linhas] = await conn.execute(`SELECT * FROM \`${TABELA_ESTADO}\` WHERE tabela = ?`, [tabela]);
+  return linhas[0] || null;
+}
+
+// Completo carregado: nova base da tabela, zera o último diferencial aplicado
+async function registrarCompleto(conn, tabela, info) {
+  await conn.execute(
+    `REPLACE INTO \`${TABELA_ESTADO}\` (tabela, dataset, completo_criado, diferencial_criado, atualizado_em)
+     VALUES (?, ?, ?, NULL, NOW())`,
+    [tabela, info.dataset || null, info.criado || null]
+  );
+}
+
+async function registrarDiferencial(conn, tabela, meta) {
+  await conn.execute(
+    `INSERT INTO \`${TABELA_ESTADO}\` (tabela, dataset, diferencial_criado, atualizado_em) VALUES (?, ?, ?, NOW())
+     ON DUPLICATE KEY UPDATE diferencial_criado = VALUES(diferencial_criado), atualizado_em = NOW()`,
+    [tabela, meta.dataset || null, meta.criado]
+  );
+}
+
+// Aplica um CSV diferencial à tabela já carregada pelo completo (upsert pela chave):
+//   1. carrega o CSV em uma tabela de staging com a mesma estrutura (CREATE TABLE … LIKE)
+//   2. numa transação: DELETE das linhas da tabela com as mesmas chaves + INSERT do staging
+// Retorna { tabela, linhas, novas, atualizadas, duracao, pulado?, avisos }.
+async function aplicarDiferencialCSV(conn, csvPath, schemas, chaves, meta) {
+  const plan = await planejarCarga(csvPath, schemas);
+  const { tabela, definicoes, preenchidas } = plan;
+  const avisos = plan.avisos.filter((a) => !a.startsWith('🔍')); // "sem schema" já aparece no completo
+
+  const atual = await estruturaAtual(conn, tabela);
+  if (atual.length === 0) {
+    throw new Error(`tabela "${tabela}" não existe — carregue o BDS completo antes do diferencial`);
+  }
+  const nomesAtuais = atual.map((c) => String(c.COLUMN_NAME).toLowerCase());
+  const nomesEsperados = definicoes.map((d) => d.nome.toLowerCase());
+  if (nomesAtuais.join('|') !== nomesEsperados.join('|')) {
+    throw new Error(`estrutura de "${tabela}" difere do CSV/schema atual — rode o BDS completo para recriar a tabela`);
+  }
+
+  const chaveCsv = encontrarChave(plan.base, chaves);
+  if (!chaveCsv) {
+    throw new Error(`"${plan.base}" sem chave em config/bds-diferencial.json — diferencial não aplicado`);
+  }
+  // Colunas da chave → nomes na tabela (aceita o nome do CSV ou o da tabela)
+  const chave = chaveCsv.map((c) => {
+    const d = definicoes.find((x) => mesmoNome(x.nome, c) || mesmoNome(x.chave ?? x.nome, c));
+    if (!d || !preenchidas.some((p) => p.nome === d.nome)) {
+      throw new Error(`coluna de chave "${c}" não existe no CSV de "${tabela}" — confira config/bds-diferencial.json`);
+    }
+    return d.nome;
+  });
+
+  const decisao = decidirAplicacao(await lerEstado(conn, tabela), meta);
+  if (!decisao.aplicar) return { tabela, pulado: decisao.motivo, avisos: [] };
+  if (decisao.aviso) avisos.push(`⚠️  ${decisao.aviso}`);
+
+  const inicio = Date.now();
+
+  // Índices do schema que faltam na tabela (carregada antes de o schema ganhar o índice):
+  // sem eles o DELETE … JOIN do merge pode levar dezenas de minutos nas tabelas grandes de log.
+  // Custo único — o próximo completo recria a tabela já com todos.
+  if (plan.plano && plan.schemaEntry.indices) {
+    const [existentes] = await conn.query(`SHOW INDEX FROM \`${tabela}\``);
+    const nomesExistentes = new Set(existentes.map((i) => String(i.Key_name).toLowerCase()));
+    const faltando = plan.schemaEntry.indices.filter((indice) => {
+      const { nomes } = montarSqlIndices(tabela, [indice], definicoes);
+      return nomes.length > 0 && !nomesExistentes.has(nomes[0].toLowerCase());
+    });
+    if (faltando.length > 0) {
+      const idx = montarSqlIndices(tabela, faltando, definicoes);
+      const inicioIdx = Date.now();
+      await conn.query(idx.sql);
+      avisos.push(`🗂️  índice(s) do schema criado(s) na tabela existente: ${idx.nomes.join(', ')} (${((Date.now() - inicioIdx) / 1000).toFixed(1)}s)`);
+    }
+  }
+
+  const staging = nomeStaging(tabela);
+  await conn.query(`DROP TABLE IF EXISTS \`${staging}\``);
+  await conn.query(`CREATE TABLE \`${staging}\` LIKE \`${tabela}\``);
+  try {
+    const linhas = await executarLoadData(conn, csvPath, staging, plan);
+    // Índice da chave no staging: o DELETE … JOIN não depende de a tabela grande ter índice nela
+    const idx = montarSqlIndices(staging, [chave], definicoes);
+    if (idx.sql) {
+      try { await conn.query(idx.sql); } catch (e) {
+        if (e.code !== 'ER_DUP_KEYNAME') throw e; // a tabela já tinha esse índice (copiado pelo LIKE)
+      }
+    }
+
+    const sql = montarSqlMerge(tabela, staging, preenchidas.map((p) => p.nome), chave);
+    await conn.beginTransaction();
+    let removidas;
+    try {
+      [{ affectedRows: removidas }] = await conn.query(sql.apagar);
+      await conn.query(sql.inserir);
+      await registrarDiferencial(conn, tabela, meta);
+      await conn.commit();
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    }
+    await conn.query(`ANALYZE TABLE \`${tabela}\``);
+
+    return {
+      tabela,
+      linhas,
+      atualizadas: Math.min(removidas, linhas),
+      novas: Math.max(linhas - removidas, 0),
+      duracao: ((Date.now() - inicio) / 1000).toFixed(1),
+      avisos,
+    };
+  } finally {
+    await conn.query(`DROP TABLE IF EXISTS \`${staging}\``);
+  }
+}
+
+// Aplica, em ordem cronológica, os diferenciais baixados em csvs/diferencial/
+async function aplicarDiferenciais(conn, schemas) {
+  const diferenciais = listarDiferenciais(CSVS_DIR);
+  const r = { aplicados: 0, pulados: 0, erros: 0, totalLinhas: 0, tabelas: [] };
+  if (diferenciais.length === 0) return r;
+
+  const chaves = carregarChavesDiferencial();
+  console.log(`\n🔁 BDS diferencial — aplicando ${diferenciais.length} CSV(s) de csvs/diferencial/...`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+  const avisosEmitidos = new Set();
+  for (const { csv: csvPath, meta } of diferenciais) {
+    const rotulo = `${path.basename(csvPath)} (${(meta?.criado || 'sem data').slice(0, 16).replace('T', ' ')})`;
+    process.stdout.write(`  ⏳ ${rotulo.padEnd(45)}`);
+    try {
+      const res = await aplicarDiferencialCSV(conn, csvPath, schemas, chaves, meta || {});
+      if (res.pulado) {
+        console.log(`⏭️  ${res.pulado}`);
+        r.pulados++;
+        // Já aplicado = tabela em dia; não deve aparecer como "não atualizada"
+        if (!r.tabelas.includes(res.tabela)) r.tabelas.push(res.tabela);
+        continue;
+      }
+      console.log(
+        `✅ ${res.linhas.toLocaleString('pt-BR')} linhas → ${res.tabela} ` +
+        `(${res.novas.toLocaleString('pt-BR')} novas, ${res.atualizadas.toLocaleString('pt-BR')} substituídas) (${res.duracao}s)`
+      );
+      for (const aviso of res.avisos) {
+        const chave = `${res.tabela}|${aviso}`;
+        if (avisosEmitidos.has(chave)) continue; // mesmo aviso só uma vez por tabela
+        avisosEmitidos.add(chave);
+        console.log(`     ${aviso}`);
+      }
+      r.aplicados++;
+      r.totalLinhas += res.linhas;
+      if (!r.tabelas.includes(res.tabela)) r.tabelas.push(res.tabela);
+    } catch (e) {
+      console.log(`❌ ${e.message.substring(0, 120)}`);
+      r.erros++;
+    }
+  }
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`✅ Diferencial: ${r.aplicados} aplicado(s), ${r.pulados} já aplicado(s)/pulado(s), ${r.erros} erro(s)`);
+  return r;
 }
 
 async function load(csvGlob) {
@@ -311,47 +519,58 @@ async function load(csvGlob) {
 
   try {
     await conn.execute('SET SESSION sql_mode = ""');
+    await garantirTabelaEstado(conn);
 
-    // Só os .csv do nível de cima de csvs/ — _anterior/ e zips/ são ignorados
+    // Só os .csv do nível de cima de csvs/ — _anterior/, zips/ e diferencial/ são ignorados
     const arquivos = csvGlob
       ? (Array.isArray(csvGlob) ? csvGlob : [csvGlob])
       : listarCsvs(CSVS_DIR);
-
-    if (arquivos.length === 0) {
-      console.log('ℹ️  Nenhum CSV encontrado para carregar.');
-      return { carregados: 0, erros: 0, totalLinhas: 0, tabelas: [] };
-    }
-
-    console.log(`\n🗄️  MySQL — Carregando ${arquivos.length} CSV(s)...`);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    const manifesto = lerManifesto(CSVS_DIR);
 
     let carregados = 0, erros = 0, totalLinhas = 0;
     const tabelas = [];
 
-    for (const csvPath of arquivos) {
-      const nome = path.basename(csvPath);
-      process.stdout.write(`  ⏳ ${nome.padEnd(45)}`);
+    if (arquivos.length === 0) {
+      console.log('ℹ️  Nenhum CSV completo/ADS para carregar em csvs/.');
+    } else {
+      console.log(`\n🗄️  MySQL — Carregando ${arquivos.length} CSV(s)...`);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-      try {
-        const { tabela, linhas, duracao, schemaFixo, avisos } = await carregarCSV(conn, csvPath, schemas);
-        const tag = schemaFixo ? '📋' : '🔍';
-        console.log(`✅ ${tag} ${linhas.toLocaleString('pt-BR')} linhas → ${tabela} (${duracao}s)`);
-        for (const aviso of avisos) console.log(`     ${aviso}`);
-        carregados++;
-        totalLinhas += linhas;
-        tabelas.push(tabela);
-      } catch (e) {
-        console.log(`❌ ${e.message.substring(0, 80)}`);
-        erros++;
+      for (const csvPath of arquivos) {
+        const nome = path.basename(csvPath);
+        process.stdout.write(`  ⏳ ${nome.padEnd(45)}`);
+
+        try {
+          const { tabela, linhas, duracao, schemaFixo, avisos } = await carregarCSV(conn, csvPath, schemas);
+          const tag = schemaFixo ? '📋' : '🔍';
+          console.log(`✅ ${tag} ${linhas.toLocaleString('pt-BR')} linhas → ${tabela} (${duracao}s)`);
+          for (const aviso of avisos) console.log(`     ${aviso}`);
+          // BDS completo (veio do manifesto): vira a base dos próximos diferenciais desta tabela
+          if (manifesto[nome]?.tipo === 'Full') await registrarCompleto(conn, tabela, manifesto[nome]);
+          carregados++;
+          totalLinhas += linhas;
+          tabelas.push(tabela);
+        } catch (e) {
+          console.log(`❌ ${e.message.substring(0, 80)}`);
+          erros++;
+        }
       }
+
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      const legenda = inferirTiposAtivo() ? 'tipos inferidos (INFERIR_TIPOS=true)' : 'todas as colunas TEXT';
+      console.log(`  📋 = schema fixo (config/schemas.json)  🔍 = sem schema → ${legenda}`);
+      console.log(`✅ Carga: ${carregados} tabelas, ${totalLinhas.toLocaleString('pt-BR')} linhas, ${erros} erros`);
     }
 
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    const legenda = inferirTiposAtivo() ? 'tipos inferidos (INFERIR_TIPOS=true)' : 'todas as colunas TEXT';
-    console.log(`  📋 = schema fixo (config/schemas.json)  🔍 = sem schema → ${legenda}`);
-    console.log(`✅ Carga: ${carregados} tabelas, ${totalLinhas.toLocaleString('pt-BR')} linhas, ${erros} erros`);
+    // Diferenciais (csvs/diferencial/) — só quando não foi pedida uma lista explícita de CSVs
+    const dif = csvGlob ? null : await aplicarDiferenciais(conn, schemas);
+    if (dif) {
+      erros += dif.erros;
+      totalLinhas += dif.totalLinhas;
+      for (const t of dif.tabelas) if (!tabelas.includes(t)) tabelas.push(t);
+    }
 
-    return { carregados, erros, totalLinhas, tabelas };
+    return { carregados, erros, totalLinhas, tabelas, diferencial: dif };
   } finally {
     await conn.end();
   }

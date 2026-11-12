@@ -4,6 +4,7 @@
 //   csvs/*.csv        → CSVs da execução atual (os únicos carregados e inventariados)
 //   csvs/_anterior/   → conteúdo da execução anterior (só a última; substituído a cada pipeline completo)
 //   csvs/zips/        → temporário dos downloads
+//   csvs/diferencial/ → BDS diferencial do dia + _bds_extracts.json (aplicados pelo loader como upsert; ver bds-diferencial.js)
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -37,10 +38,13 @@ function arquivarCsvsAnteriores(csvsDir) {
   return itens;
 }
 
-// Tabelas existentes que não estão entre as carregadas (comparação sem diferenciar maiúsculas)
+// Tabelas existentes que não estão entre as carregadas (comparação sem diferenciar maiúsculas).
+// Tabelas internas do ETL (_etl_bds_estado, staging _dif_*) ficam de fora.
 function tabelasNaoAtualizadas(existentes, carregadas) {
   const atualizadas = new Set((carregadas || []).map((t) => String(t).toLowerCase()));
-  return (existentes || []).filter((t) => !atualizadas.has(String(t).toLowerCase())).sort();
+  return (existentes || [])
+    .filter((t) => !String(t).startsWith('_') && !atualizadas.has(String(t).toLowerCase()))
+    .sort();
 }
 
 module.exports = { PASTA_ANTERIOR, listarCsvs, arquivarCsvsAnteriores, tabelasNaoAtualizadas };

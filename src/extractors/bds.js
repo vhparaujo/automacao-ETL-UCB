@@ -10,6 +10,9 @@ const { getAccessToken } = require('../auth/oauth');
 const { obterVersaoLP } = require('../utils/versao-api');
 const { mesmoNome, nomesNaoEncontrados } = require('../utils/nomes');
 const { selecionarExtractMaisRecente } = require('../utils/bds-extracts');
+const {
+  pastaDiferencial, selecionarDiferencialDoDia, registrarNoManifesto,
+} = require('../utils/bds-diferencial');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -99,12 +102,71 @@ async function listar() {
   }));
 }
 
+// Baixa um ZIP de extract e extrai os CSVs em destinoDir. Retorna { bytes, csvs }.
+async function baixarExtract(extract, nomeArquivo, destinoDir, token) {
+  fs.mkdirSync(destinoDir, { recursive: true });
+  const zipPath = path.join(ZIPS_DIR, `${nomeArquivo.replace(/[^a-zA-Z0-9]/g, '_')}.zip`);
+  const bytes = await baixarArquivo(extract.DownloadLink, zipPath, token);
+  const csvs = await extrairCsvs(zipPath, destinoDir); // streaming: CSVs de vários GB
+  fs.unlinkSync(zipPath);
+  return { bytes, csvs };
+}
+
+const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+// Completo: o extract Full mais recente → CSVs em csvs/ + registro em csvs/_bds_extracts.json
+async function baixarCompleto(ds, nome, token) {
+  const extracts = await requisicaoAPI(ds.Full.ExtractsLink, token);
+  // Escolhe explicitamente o mais recente por CreatedDate (a API não garante a ordem)
+  const { extract: latest, data: dataExtract, semDatas } = selecionarExtractMaisRecente(extracts.Objects);
+  if (semDatas && !avisoSemDataEmitido) {
+    avisoSemDataEmitido = true;
+    process.stdout.write('\n      ⚠️  Extracts sem CreatedDate/QueuedForProcessingDate — usando a ordem retornada pela API');
+  }
+  if (!latest?.DownloadLink) return { pulado: 'sem arquivo disponível' };
+
+  process.stdout.write('\n');
+  const { bytes, csvs } = await baixarExtract(latest, nome, CSVS_DIR, token);
+  // O loader usa o manifesto para saber de qual completo veio cada tabela (base dos diferenciais)
+  registrarNoManifesto(CSVS_DIR, csvs, { dataset: nome, tipo: 'Full', criado: dataExtract });
+  const quando = dataExtract ? ` — extract de ${dataExtract}` : '';
+  console.log(`      ✅ ${mb(bytes)} — ${csvs.length} CSV(s)${quando}\n`);
+  return { arquivos: 1 };
+}
+
+// Diferencial: só o extract Differential gerado hoje (selecionarDiferencialDoDia) — os de dias
+// anteriores não são baixados. Os CSVs vão direto para csvs/diferencial/ (sobrescrevem o do dia
+// anterior, como no completo) e o registro { dataset, tipo, criado, base, anterior } vai para
+// csvs/diferencial/_bds_extracts.json.
+async function baixarDiferencialDoDia(ds, nome, token) {
+  if (!ds.Differential?.ExtractsLink) return { pulado: 'sem diferencial na API' };
+
+  const completos = ds.Full?.ExtractsLink ? await requisicaoAPI(ds.Full.ExtractsLink, token) : { Objects: [] };
+  const { data: base } = selecionarExtractMaisRecente(completos.Objects);
+  const extracts = await requisicaoAPI(ds.Differential.ExtractsLink, token);
+  const escolhido = selecionarDiferencialDoDia(extracts.Objects, base);
+  if (escolhido.motivo) return { pulado: escolhido.motivo };
+
+  const { extract, criado, anterior } = escolhido;
+  process.stdout.write('\n');
+  const pasta = pastaDiferencial(CSVS_DIR);
+  const { bytes, csvs } = await baixarExtract(extract, `${nome}_dif`, pasta, token);
+  registrarNoManifesto(pasta, csvs, { dataset: nome, tipo: 'Differential', criado, base, anterior });
+  console.log(`      ✅ ${mb(bytes)} — ${csvs.length} CSV(s) — diferencial de ${criado}\n`);
+  return { arquivos: 1 };
+}
+
 // Baixa os datasets conforme o modo:
 //   'auto'     → apenas os listados em config/bds-selecao.json
 //   'todos'    → todos os disponíveis
 //   'selecao'  → lista de nomes passada em opcoes.nomes (usado pela CLI)
+// e o tipo:
+//   'completo'    (padrão) → último extract Full de cada dataset
+//   'diferencial'          → só o extract Differential gerado hoje
 async function download(opcoes = {}) {
   const modo = opcoes.modo || 'auto';
+  const tipo = opcoes.tipo || 'completo';
+  if (!['completo', 'diferencial'].includes(tipo)) throw new Error(`Tipo de BDS inválido: "${tipo}" (use completo ou diferencial)`);
   fs.mkdirSync(CSVS_DIR, { recursive: true });
   fs.mkdirSync(ZIPS_DIR, { recursive: true });
 
@@ -149,24 +211,24 @@ async function download(opcoes = {}) {
   if (selecionados.length === 0) {
     console.log('ℹ️  Nenhum dataset BDS para baixar com a seleção atual.');
     console.log('   Edite config/bds-selecao.json para adicionar datasets automáticos.');
-    return { baixados: 0, pulados: 0, erros: 0 };
+    return { tipo, baixados: 0, pulados: 0, erros: 0, arquivos: 0 };
   }
 
   const label = modo === 'auto' ? 'automáticos' : modo === 'todos' ? 'todos' : 'selecionados';
-  console.log(`\n📦 BDS — Baixando ${selecionados.length} dataset(s) ${label} (API LP ${versao})...`);
+  const rotuloTipo = tipo === 'diferencial' ? 'DIFERENCIAL' : 'COMPLETO';
+  console.log(`\n📦 BDS ${rotuloTipo} — ${selecionados.length} dataset(s) ${label} (API LP ${versao})...`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-  let baixados = 0, pulados = 0, erros = 0;
+  let baixados = 0, pulados = 0, erros = 0, arquivos = 0;
   const inicio = Date.now();
 
   for (let i = 0; i < selecionados.length; i++) {
     const ds = selecionados[i];
-    const fullInfo = ds.Full;
-    const nome = fullInfo?.Name || 'Desconhecido';
+    const nome = ds.Full?.Name || ds.Differential?.Name || 'Desconhecido';
 
     process.stdout.write(`  📥 [${String(i + 1).padStart(3)}/${selecionados.length}] ${nome.padEnd(42)}`);
 
-    if (!fullInfo?.ExtractsLink) {
+    if (tipo === 'completo' && !ds.Full?.ExtractsLink) {
       process.stdout.write(' — sem extract, pulando\n');
       pulados++;
       continue;
@@ -175,29 +237,14 @@ async function download(opcoes = {}) {
     try {
       // Renova o token a cada dataset para evitar 401 em sessões longas
       token = await getAccessToken();
-      const extracts = await requisicaoAPI(fullInfo.ExtractsLink, token);
-      // Escolhe explicitamente o mais recente por CreatedDate (a API não garante a ordem)
-      const { extract: latest, data: dataExtract, semDatas } = selecionarExtractMaisRecente(extracts.Objects);
-      if (semDatas && !avisoSemDataEmitido) {
-        avisoSemDataEmitido = true;
-        process.stdout.write('\n      ⚠️  Extracts sem CreatedDate/QueuedForProcessingDate — usando a ordem retornada pela API');
-      }
-
-      if (!latest?.DownloadLink) {
-        process.stdout.write(' — sem arquivo disponível, pulando\n');
+      const r = tipo === 'diferencial' ? await baixarDiferencialDoDia(ds, nome, token) : await baixarCompleto(ds, nome, token);
+      if (r.pulado) {
+        process.stdout.write(` — ${r.pulado}, pulando\n`);
         pulados++;
         continue;
       }
-
-      process.stdout.write('\n');
-      const zipPath = path.join(ZIPS_DIR, `${nome.replace(/[^a-zA-Z0-9]/g, '_')}.zip`);
-      const bytes = await baixarArquivo(latest.DownloadLink, zipPath, token);
-      const csvs = await extrairCsvs(zipPath, CSVS_DIR); // streaming: CSVs de vários GB
-      fs.unlinkSync(zipPath);
-
-      const quando = dataExtract ? ` — extract de ${dataExtract}` : '';
-      console.log(`      ✅ ${(bytes / 1024 / 1024).toFixed(1)} MB — ${csvs.length} CSV(s)${quando}\n`);
       baixados++;
+      arquivos += r.arquivos;
     } catch (e) {
       process.stdout.write(`\n      ⚠️  ${e.message.substring(0, 80)}\n\n`);
       erros++;
@@ -206,13 +253,15 @@ async function download(opcoes = {}) {
 
   const min = Math.floor((Date.now() - inicio) / 60000);
   const seg = Math.floor(((Date.now() - inicio) % 60000) / 1000);
+  const extra = tipo === 'diferencial' ? ` (${arquivos} diferencial(is))` : '';
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`✅ BDS: ${baixados} baixados, ${pulados} sem arquivo, ${erros} erros — ${min}m ${seg}s`);
-  return { baixados, pulados, erros };
+  console.log(`✅ BDS ${tipo}: ${baixados} baixados${extra}, ${pulados} pulados, ${erros} erros — ${min}m ${seg}s`);
+  return { tipo, baixados, pulados, erros, arquivos };
 }
 
 if (require.main === module) {
-  download().catch((e) => { console.error('❌', e.message); process.exit(1); });
+  const tipo = process.argv.includes('--diferencial') ? 'diferencial' : 'completo';
+  download({ tipo }).catch((e) => { console.error('❌', e.message); process.exit(1); });
 }
 
 module.exports = { download, listar };

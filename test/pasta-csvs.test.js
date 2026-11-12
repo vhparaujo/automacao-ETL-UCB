@@ -72,6 +72,7 @@ test('arquivarCsvsAnteriores move tudo para _anterior/, substitui o antigo e man
 test('tabelasNaoAtualizadas compara sem diferenciar maiúsculas', () => {
   assert.deepEqual(tabelasNaoAtualizadas(['users', 'GradeObjects', 'x'], ['USERS', 'gradeobjects']), ['x']);
   assert.deepEqual(tabelasNaoAtualizadas(['a'], undefined), ['a']);
+  assert.deepEqual(tabelasNaoAtualizadas(['_etl_bds_estado', '_dif_users', 'b'], []), ['b']); // internas do ETL
 });
 
 test('pipeline completo arquiva csvs/ antes dos downloads e reporta tabelas não atualizadas', async () => {

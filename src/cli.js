@@ -7,6 +7,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { resolverData, EXPRESSOES_VALIDAS } = require('./utils/datas');
 const { lerFalhaAuth } = require('./utils/falha-auth');
+const { lerAgendamentos, descreverEtapas, AGENDAMENTOS_PADRAO } = require('./utils/agendamentos');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
 
@@ -217,39 +218,71 @@ async function adicionarADS() {
 // ──────────────────────────────────────────────────────
 async function configurarAgendamento() {
   limparTela();
-  console.log('⏰ Configurar agendamento\n');
+  console.log('⏰ Configurar agendamentos (npm start)\n');
   const config = JSON.parse(fs.readFileSync('config/schedule.json', 'utf8'));
-  const ag = config.agendamento;
 
-  console.log(`  Ativo: ${ag.ativo ? 'sim' : 'não'} | Cron: ${ag.cron} | ${ag.descricao}\n`);
-  console.log('  [1] Diário às 3h');
-  console.log('  [2] Seg e Qui às 3h');
-  console.log('  [3] Semanal (domingo às 2h)');
-  console.log('  [4] Personalizado (cron)');
-  console.log('  [5] Ativar/desativar');
+  let lidos;
+  try {
+    lidos = lerAgendamentos(config);
+  } catch (e) {
+    console.log(`❌ config/schedule.json: ${e.message}`);
+    await perguntar('\nPressione Enter para voltar...');
+    return;
+  }
+  // Formato antigo (um único "agendamento") é convertido para a lista ao salvar
+  const salvar = (lista) => {
+    delete config.agendamento;
+    config.fuso_horario = lidos.fuso;
+    config.agendamentos = lista;
+    fs.writeFileSync('config/schedule.json', JSON.stringify(config, null, 2) + '\n');
+  };
+  const lista = lidos.agendamentos;
+
+  console.log(`  Fuso: ${lidos.fuso}\n`);
+  if (lista.length === 0) console.log('  (nenhum agendamento)\n');
+  lista.forEach((ag, i) => {
+    console.log(`  ${i + 1}. ${ag.ativo ? '✅' : '⏸️ '} ${ag.nome.padEnd(24)} ${ag.cron.padEnd(16)} → ${descreverEtapas(ag)}`);
+    if (ag.descricao) console.log(`        ${ag.descricao}`);
+  });
+
+  console.log('\n  [A] Ativar/desativar um agendamento');
+  console.log('  [C] Alterar o cron de um agendamento');
+  console.log('  [P] Restaurar o padrão (todo dia 6h BDS diferencial + ADS; seg 9h BDS completo)');
   console.log('  [V] Voltar\n');
 
-  const op = (await perguntar('  Opção: ')).trim();
-  const opcoes = {
-    '1': { cron: '0 3 * * *', descricao: 'Toda madrugada às 3h' },
-    '2': { cron: '0 3 * * 1,4', descricao: 'Segunda e quinta às 3h' },
-    '3': { cron: '0 2 * * 0', descricao: 'Todo domingo às 2h' },
+  const op = (await perguntar('  Opção: ')).trim().toUpperCase();
+  const escolher = async () => {
+    const n = parseInt((await perguntar('  Número do agendamento: ')).trim(), 10);
+    if (!(n >= 1 && n <= lista.length)) { console.log('❌ Número inválido.'); return null; }
+    return lista[n - 1];
   };
 
-  if (opcoes[op]) {
-    Object.assign(config.agendamento, opcoes[op]);
-    fs.writeFileSync('config/schedule.json', JSON.stringify(config, null, 2));
-    console.log(`✅ Agendamento: ${opcoes[op].descricao}`);
-  } else if (op === '4') {
-    config.agendamento.cron = (await perguntar('Cron expression: ')).trim();
-    config.agendamento.descricao = (await perguntar('Descrição: ')).trim();
-    fs.writeFileSync('config/schedule.json', JSON.stringify(config, null, 2));
-    console.log('✅ Agendamento atualizado.');
-  } else if (op === '5') {
-    config.agendamento.ativo = !config.agendamento.ativo;
-    fs.writeFileSync('config/schedule.json', JSON.stringify(config, null, 2));
-    console.log(`✅ Agendamento ${config.agendamento.ativo ? 'ativado' : 'desativado'}.`);
+  if (op === 'A') {
+    const ag = await escolher();
+    if (ag) {
+      ag.ativo = !ag.ativo;
+      salvar(lista);
+      console.log(`✅ "${ag.nome}" ${ag.ativo ? 'ativado' : 'desativado'}.`);
+    }
+  } else if (op === 'C') {
+    const ag = await escolher();
+    if (ag) {
+      const novo = (await perguntar(`  Cron (atual: ${ag.cron}): `)).trim();
+      if (!require('node-cron').validate(novo)) {
+        console.log('❌ Cron inválido — nada alterado. Ex.: "0 6 * * *" (minuto hora dia mês dia-da-semana)');
+      } else {
+        ag.cron = novo;
+        const desc = (await perguntar('  Descrição (Enter = manter): ')).trim();
+        if (desc) ag.descricao = desc;
+        salvar(lista);
+        console.log('✅ Agendamento atualizado.');
+      }
+    }
+  } else if (op === 'P') {
+    salvar(AGENDAMENTOS_PADRAO.map((ag) => ({ ...ag })));
+    console.log('✅ Agendamentos padrão restaurados.');
   }
+  if (['A', 'C', 'P'].includes(op)) console.log('   Reinicie o "npm start" para valer.');
 
   await perguntar('\nPressione Enter para voltar...');
 }
@@ -301,15 +334,20 @@ async function rodarPipeline() {
   console.log('  [3] Apenas ADS automáticos');
   console.log('  [4] Apenas carga MySQL');
   console.log('  [5] Apenas transformações SQL');
+  console.log('  [6] Pipeline completo com BDS DIFERENCIAL (só o do dia)');
+  console.log('  [7] Apenas BDS diferencial');
   console.log('  [V] Voltar\n');
 
   const op = (await perguntar('  Opção: ')).trim();
-  const flags = { '1': [], '2': ['--apenas-bds'], '3': ['--apenas-ads'], '4': ['--apenas-load'], '5': ['--apenas-transform'] };
+  const flags = {
+    '1': [], '2': ['--apenas-bds'], '3': ['--apenas-ads'], '4': ['--apenas-load'], '5': ['--apenas-transform'],
+    '6': ['--diferencial'], '7': ['--apenas-bds', '--diferencial'],
+  };
   if (!flags[op]) return;
 
   // Pipeline completo ou só ADS: permite trocar a data de início de todos os ADS nesta execução
   const args = [...flags[op]];
-  if (op === '1' || op === '3') {
+  if (op === '1' || op === '3' || op === '6') {
     const inicio = (await perguntar('  Data de início dos ADS (ex.: 2026-08-01, -30d, inicio_semestre — Enter = usar o config): ')).trim();
     if (inicio) args.push('--inicio', inicio);
   }

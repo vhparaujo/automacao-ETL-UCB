@@ -1,16 +1,31 @@
 {
-  "_instrucoes": "Configure o agendamento. Use cron syntax ou edite o campo 'cron'.",
+  "_instrucoes": "Agendamentos do 'npm start' (node-cron, no fuso abaixo). Cada item roda o pipeline com o que estiver marcado: bds = \"completo\" | \"diferencial\" | false; ads = true | false. Carga no MySQL e transformações seguem 'pipeline' abaixo. Execuções que coincidirem rodam em fila, uma depois da outra.",
+  "_horarios_brightspace": "Na UCB o Brightspace gera o BDS completo toda segunda ~8h20 e os diferenciais todo dia ~5h20 (Brasília). Agende depois desses horários. O diferencial baixa só o gerado no dia.",
   "_exemplos_cron": {
-    "todo_dia_3h": "0 3 * * *",
-    "segunda_e_quinta_3h": "0 3 * * 1,4",
-    "toda_semana_domingo_2h": "0 2 * * 0"
+    "todo_dia_6h": "0 6 * * *",
+    "segunda_9h": "0 9 * * 1",
+    "terca_a_domingo_6h": "0 6 * * 0,2-6",
+    "segunda_e_quinta_3h": "0 3 * * 1,4"
   },
-  "agendamento": {
-    "ativo": true,
-    "cron": "0 3 * * *",
-    "descricao": "Toda madrugada às 3h",
-    "fuso_horario": "America/Sao_Paulo"
-  },
+  "fuso_horario": "America/Sao_Paulo",
+  "agendamentos": [
+    {
+      "nome": "BDS diferencial + ADS",
+      "descricao": "Todo dia às 6h — BDS diferencial do dia (gerado às ~5h20) e ADS",
+      "ativo": true,
+      "cron": "0 6 * * *",
+      "bds": "diferencial",
+      "ads": true
+    },
+    {
+      "nome": "BDS completo",
+      "descricao": "Segunda às 9h — BDS completo (o Brightspace gera às ~8h20)",
+      "ativo": true,
+      "cron": "0 9 * * 1",
+      "bds": "completo",
+      "ads": false
+    }
+  ],
   "pipeline": {
     "baixar_bds": true,
     "baixar_ads": true,

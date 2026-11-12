@@ -8,6 +8,7 @@
     "start": "node src/pipeline.js --watch",
     "pipeline": "node src/pipeline.js",
     "bds": "node src/pipeline.js --apenas-bds",
+    "bds:diferencial": "node src/pipeline.js --apenas-bds --diferencial",
     "ads": "node src/pipeline.js --apenas-ads",
     "load": "node src/pipeline.js --apenas-load",
     "transform": "node src/pipeline.js --apenas-transform",

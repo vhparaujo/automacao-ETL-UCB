@@ -82,7 +82,8 @@ Consultas como "alunos sem acesso" (cruzando `userenrollments` × `courseaccess`
 Veja os índices de uma tabela com `SHOW INDEX FROM userenrollments;`.
 
 Se uma consulta sua cruzar ou filtrar uma coluna sem índice e ficar lenta, adicione em
-`config/schemas.json`, na entrada da tabela, e rode `npm run load` (ou espere a madrugada):
+`config/schemas.json`, na entrada da tabela, e rode `npm run load` (ou espere a próxima execução agendada —
+o diferencial diário cria na tabela os índices do schema que faltarem; o completo de segunda recria todos):
 
 ```json
 "indices": [["UserId"], ["OrgUnitId", "RoleId"]]
@@ -256,7 +257,7 @@ Adicione um item dentro de `"transformacoes"`:
 | `nome` | sim | Identificador. Para `view`, use o mesmo nome da view. |
 | `arquivo` | sim | Caminho do `.sql`. |
 | `tipo` | sim | `view`, `exportar_csv` ou `table`. |
-| `ativo` | sim | `true` = roda toda madrugada. Deixe `false` enquanto testa. |
+| `ativo` | sim | `true` = roda em toda execução agendada (todo dia às 6h; segunda também às 9h). Deixe `false` enquanto testa. |
 | `arquivo_saida` | só `exportar_csv` | Ex.: `exports/alunos.csv` (padrão: `exports/<nome>.csv`). |
 | `descricao` | recomendado | O que é, para quem vem depois. |
 
@@ -310,8 +311,12 @@ No fim de cada execução o log lista as views atualizadas:
 - **Consulta lenta?** Rode `EXPLAIN FORMAT=TREE <sua consulta>`: `Table scan` em tabela grande ou
   `hash join (no condition)` indicam falta de índice na coluna do `JOIN` (veja 2.4).
 - **Divisão:** use `NULLIF(denominador, 0)` para não dividir por zero.
-- **Não edite tabelas carregadas** (`users`, `courseaccess`…): elas são apagadas e recarregadas
-  toda madrugada. Crie sempre views/tabelas novas.
+- **Não edite tabelas carregadas** (`users`, `courseaccess`…): elas são recriadas toda segunda (BDS
+  completo) e atualizadas todo dia pelo diferencial. Crie sempre views/tabelas novas.
+- **Atualização dos BDS:** todo dia às 6h as tabelas recebem só as linhas alteradas (diferencial do dia). Linhas
+  apagadas de verdade no Brightspace (ex.: aluno desinscrito) só somem no completo de segunda; exclusões
+  lógicas (`IsDeleted`, `DateDeleted`) aparecem no dia seguinte. Ignore as tabelas que começam com `_`
+  (`_etl_bds_estado`, `_dif_*`) — são de controle do ETL.
 - **Não use `SELECT *` em views** — se o Brightspace adicionar colunas, a view muda sem aviso.
 
 ## 7. Privacidade (LGPD)
@@ -370,5 +375,5 @@ npm run inventario                              # vê tabelas/colunas → export
 # salva em src/transforms/queries/<nome>.sql
 # registra em config/transforms.json com "ativo": false
 npm run transform -- --so <nome>                # testa só a sua
-# muda para "ativo": true → roda toda madrugada
+# muda para "ativo": true → roda em toda execução agendada
 ```

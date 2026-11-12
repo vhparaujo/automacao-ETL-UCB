@@ -58,6 +58,8 @@ automacao-ETL-UCB/
 │       ├── nomes.js             ← normalização de nomes (acentos/caixa/espaço/_/-) + encontrarSchema()
 │       ├── datas.js             ← datas relativas dos filtros ADS ("hoje", "-180d", "inicio_semestre"…)
 │       ├── bds-extracts.js      ← escolhe o extract BDS mais recente por CreatedDate
+│       ├── bds-diferencial.js   ← BDS diferencial: seleção, pastas, manifesto, decisão e SQL do upsert
+│       ├── agendamentos.js      ← lerAgendamentos() de schedule.json (vários crons; formato antigo aceito)
 │       ├── falha-auth.js        ← detecta refresh token inválido e grava logs/ULTIMA_FALHA_AUTH.txt
 │       ├── ads-config.js        ← slug(), nomeArquivoADS() (arquivo_csv), montarFiltros(), compararFiltros()
 │       ├── ads-filtros.js       ← npm run ads:filtros — filtros declarados por cada ADS vs. config
@@ -69,8 +71,9 @@ automacao-ETL-UCB/
 ├── config/
 │   ├── ads-filters.json         ← filtros dos ADS (editável)
 │   ├── bds-selecao.json         ← quais BDS baixar no modo automático (editável)
+│   ├── bds-diferencial.json     ← chave de cada BDS para aplicar o diferencial (upsert)
 │   ├── schemas.json             ← schemas fixos de tabelas (tipos, nome da tabela, aliases)
-│   ├── schedule.json            ← agendamento + etapas do pipeline (editável)
+│   ├── schedule.json            ← agendamentos (cron + BDS completo/diferencial + ADS) + etapas
 │   ├── transforms.json          ← quais queries rodar e o que exportar (editável)
 │   └── roles.txt                ← referência de IDs de roles
 │
@@ -155,8 +158,13 @@ O Client ID e Client Secret gerados devem estar no `.env`.
 
 ### O que são
 
-São os ~137 datasets gerados automaticamente pelo Brightspace toda madrugada.
-Não precisam de filtros — retornam dados de toda a instituição.
+São os ~135 datasets gerados automaticamente pelo Brightspace. Não precisam de filtros — retornam
+dados de toda a instituição. Cada um tem dois plugins (conferido na API da UCB em 12/11/2026):
+
+| Tipo | Quando sai (Brasília) | API mantém | Conteúdo |
+|------|-----------------------|------------|----------|
+| `Full` (completo) | segunda ~08:20 | só o último | a tabela inteira |
+| `Differential` | todo dia ~05:21 | ~14 dias | linhas alteradas desde o diferencial anterior — **mesmo nome de CSV e mesmas colunas** do completo |
 
 ### Fluxo real (src/extractors/bds.js)
 
@@ -165,7 +173,8 @@ Não precisam de filtros — retornam dados de toda a instituição.
 GET /d2l/api/lp/(version)/datasets/bds
 # → ObjectListPage de BrightspaceDataSetInfo:
 #   { SchemaId, Full: { PluginId, Name, Description, ExtractsLink }, Differential: {...}, ExtractsLink }
-#   O código usa ds.Full.Name como nome e ds.Full.ExtractsLink para os extracts.
+#   O código usa ds.Full.Name como nome; ds.Full.ExtractsLink (completo) ou
+#   ds.Differential.ExtractsLink (diferencial) para os extracts.
 
 # 2. Listar os extracts do plugin Full (URL opaca vinda da resposta acima)
 GET ds.Full.ExtractsLink
@@ -188,6 +197,21 @@ GET extract.DownloadLink
 #    no SystemAccessLog (ZIP 1,2 GB → CSV 7,4 GB: "Cannot create a Buffer larger than…").
 ```
 
+### Diferencial — `download({ tipo: 'diferencial' })` (`--diferencial`, agendamento `"bds": "diferencial"`)
+
+```
+# Por dataset: data do último Full (ds.Full.ExtractsLink) → selecionarDiferencialDoDia()
+# (src/utils/bds-diferencial.js): SÓ o Differential mais recente, se criado HOJE (America/Sao_Paulo)
+# e depois do último Full — os de dias anteriores não são baixados. Senão pula o dataset com o motivo
+# ("ainda não foi gerado" / "já está no completo"). CSVs direto em csvs/diferencial/ (sobrescrevem os do
+# dia anterior, como no completo) + registro em csvs/diferencial/_bds_extracts.json
+# { "Users.csv": { dataset, tipo, criado, base (data do Full), anterior (diferencial anterior na API) } }.
+# O loader usa "anterior" para avisar quando o diferencial de um dia não foi aplicado (lacuna até o
+# próximo completo).
+# Completo: grava csvs/_bds_extracts.json { "Users.csv": { dataset, tipo: "Full", criado } } —
+# o loader usa para registrar a base de cada tabela.
+```
+
 > Os endpoints antigos `/dataExport/bds/list`, `/dataExport/bds/(pluginId)`,
 > `FullDatasetLink` e `DifferentialDatasetLink` **não são usados**. Não migrar o código para eles.
 
@@ -203,6 +227,7 @@ GET extract.DownloadLink
 
 - Downloads grandes (100MB+): sempre `stream/promises.pipeline()` — nunca `arrayBuffer()`.
 - Log por dataset: tamanho, quantidade de CSVs e data do extract escolhido.
+- Nomes no bds-selecao.json precisam bater com `Full.Name` da API (ex.: "Objetos do Conteúdo" → ContentObjects.csv; "Objetos de conteúdo" não existe). Nome ausente → o download avisa com sugestões e segue.
 - A versão LP vem de `obterVersaoLP()` (`src/utils/versao-api.js`): `LP_API_VERSION` do `.env`
   ou a `LatestVersion` do produto `lp` em `GET /d2l/api/versions/` (cacheada por processo).
 
@@ -362,6 +387,28 @@ strings como "Professor" com erro 400.
   o MySQL (sql_mode='') gravava 0 para o texto. Vale também para tipos inferidos (INFERIR_TIPOS=true).
 - `Version` do Brightspace é `BIGINT` (passa de 2.147.483.647).
 
+### BDS diferencial — `aplicarDiferenciais()` (depois dos CSVs do nível de cima)
+
+```javascript
+// Para cada CSV de csvs/diferencial/ (ordem cronológica do "criado" em diferencial/_bds_extracts.json):
+// 1. planejarCarga() (mesma do completo) → tabela/colunas; a tabela precisa existir com a mesma
+//    estrutura (senão erro: "rode o BDS completo").
+// 2. Chave em config/bds-diferencial.json (encontrarChave(), casamento normalizado). Sem chave → erro.
+// 3. decidirAplicacao() com _etl_bds_estado (tabela, completo_criado, diferencial_criado):
+//    pula já aplicados e anteriores ao completo carregado; avisa se o completo da tabela é mais
+//    antigo que o "base" do diferencial, se o "anterior" não foi aplicado (lacuna) ou se não há
+//    registro de completo.
+// 4. Índices do schema que faltam na tabela são criados (custo único; sem eles o DELETE…JOIN em
+//    systemaccesslog levava 10 min+). Índices compostos casados com a chave: (UserId, Timestamp)
+//    nos logs, (UserId, OrgUnitId) em userenrollments, (UserId, GradeObjectId) em graderesults.
+// 5. CREATE TABLE _dif_<tabela> LIKE <tabela> → LOAD DATA → índice da chave no staging →
+//    transação: DELETE t JOIN staging ON chave (<=>) + INSERT … SELECT + estado → ANALYZE → DROP staging.
+// O completo (CSV listado em csvs/_bds_extracts.json) grava completo_criado e zera diferencial_criado.
+// tabelasNaoAtualizadas() ignora tabelas que começam com "_" (_etl_bds_estado, _dif_*).
+```
+
+- Diferencial não traz exclusões físicas (ex.: desinscrição) — o completo semanal corrige.
+
 ---
 
 ## Fase 5 — Transformação (Engine SQL)
@@ -444,27 +491,25 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 
 ```json
 {
-  "_instrucoes": "Configure o agendamento. Use cron syntax ou intervalos predefinidos.",
-  "_exemplos_cron": {
-    "todo_dia_3h": "0 3 * * *",
-    "segunda_e_quinta_3h": "0 3 * * 1,4",
-    "toda_semana_domingo_2h": "0 2 * * 0"
-  },
-  "agendamento": {
-    "ativo": true,
-    "cron": "0 3 * * *",
-    "descricao": "Toda madrugada às 3h",
-    "fuso_horario": "America/Sao_Paulo"
-  },
+  "fuso_horario": "America/Sao_Paulo",
+  "agendamentos": [
+    { "nome": "BDS diferencial + ADS", "ativo": true, "cron": "0 6 * * *", "bds": "diferencial", "ads": true },
+    { "nome": "BDS completo",          "ativo": true, "cron": "0 9 * * 1", "bds": "completo",    "ads": false }
+  ],
   "pipeline": {
-    "baixar_bds": true,
-    "baixar_ads": true,
-    "carregar_mysql": true,
-    "executar_transformacoes": true,
-    "exportar_csvs": true
+    "baixar_bds": true, "baixar_ads": true, "carregar_mysql": true,
+    "executar_transformacoes": true, "exportar_csvs": true
   }
 }
 ```
+
+- `lerAgendamentos()` (`src/utils/agendamentos.js`) valida `bds` (`"completo"|"diferencial"|false`) e aceita
+  o formato antigo (`"agendamento": { cron, ativo, fuso_horario }` = BDS completo + ADS).
+- `iniciarAgendamento()` agenda cada item ativo (cron validado com `cron.validate`) e roda as execuções
+  em **fila** (uma por vez). Cada execução é `completo: true` (arquiva csvs/, inventário no fim);
+  `pipeline.baixar_bds/baixar_ads` continuam valendo como chave geral.
+- Horários escolhidos depois da geração no Brightspace (completo ~8h20 de segunda, diferencial ~5h20).
+- CLI [3]: lista os agendamentos, [A] ativa/desativa, [C] troca o cron, [P] restaura `AGENDAMENTOS_PADRAO`.
 
 ### src/pipeline.js
 
@@ -476,9 +521,10 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 //      grava logs/ULTIMA_FALHA_AUTH.txt e ENCERRA sem as etapas seguintes (exit code 1 manual).
 //    • Sucesso: remove logs/ULTIMA_FALHA_AUTH.txt se existir.
 //    • Pipeline completo (sem --apenas-*; também o cron): move csvs/ → csvs/_anterior/ antes de baixar.
-// 2. bds.download()            → baixar_bds (avisa nomes do bds-selecao.json ausentes na API, com sugestões)
+// 2. bds.download({ tipo })    → baixar_bds; tipo = opcoes.bdsTipo ('completo' | 'diferencial')
+//                                (avisa nomes do bds-selecao.json ausentes na API, com sugestões)
 // 3. ads.download()            → baixar_ads
-// 4. load()                    → carregar_mysql
+// 4. load()                    → carregar_mysql (CSVs de csvs/ + diferenciais de csvs/diferencial/)
 // 5. engine.run({ exportarCsvs }) → executar_transformacoes (+ exportar_csvs)
 // 6. notificarViews(views)     → loga views prontas para o PowerBI
 //    + lista tabelas do MySQL não atualizadas nesta execução; inventário (só pipeline completo)
@@ -486,7 +532,8 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 //
 // Execução manual:
 // node src/pipeline.js                    → roda tudo agora
-// node src/pipeline.js --apenas-bds       → só baixa BDS
+// node src/pipeline.js --apenas-bds       → só baixa BDS (completo)
+// node src/pipeline.js --diferencial      → pipeline com o BDS diferencial do dia (também com --apenas-bds)
 // node src/pipeline.js --apenas-ads       → só baixa ADS
 // node src/pipeline.js --apenas-ads --inicio 2026-08-01 [--fim hoje] → ADS com outro período (só nesta execução)
 // node src/pipeline.js --apenas-load      → só carrega no MySQL
@@ -684,6 +731,7 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   "start":     "node src/pipeline.js --watch",
   "pipeline":  "node src/pipeline.js",
   "bds":       "node src/pipeline.js --apenas-bds",
+  "bds:diferencial": "node src/pipeline.js --apenas-bds --diferencial",
   "ads":       "node src/pipeline.js --apenas-ads",
   "load":      "node src/pipeline.js --apenas-load",
   "transform": "node src/pipeline.js --apenas-transform",
@@ -706,6 +754,7 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   Usa-se `node --test` sem argumento de diretório porque `node --test test/` quebra no Node 22+.
 - Os testes não acessam MySQL nem Brightspace: módulos externos são mockados via `require.cache`.
 - Funções puras testadas: `src/utils/csv.js`, `nomes.js`, `datas.js` (inclui `lerArgsPeriodo`), `ads-periodo.js`, `bds-extracts.js`,
+  `bds-diferencial.js`, `agendamentos.js` (inclui os crons do schedule.json real),
   `falha-auth.js`; `engine.run()` e o tratamento de falha de auth do pipeline com mocks.
 
 ---
@@ -716,7 +765,7 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
 - **Sistema:** Brightspace (D2L) — `ava.catolica.edu.br`
 - **OrgUnitId padrão da instituição:** 6606
 - **Banco MySQL:** host 127.0.0.1, porta 3307, user `dataUCB`, banco `data_ucb`
-- **Dados:** 137 BDS diários + ADS sob demanda (Uso do Instrutor, Uso do Aluno, etc.)
+- **Dados:** ~135 BDS (completo semanal + diferenciais diários) + ADS sob demanda (Uso do Instrutor, Uso do Aluno, etc.)
 - **Consumidores:** PowerBI (via views MySQL) + CSVs para entrega manual
 - **Processo atual:** 100% manual — este sistema automatiza tudo
 
