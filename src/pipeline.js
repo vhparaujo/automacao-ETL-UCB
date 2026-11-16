@@ -115,18 +115,23 @@ async function executarPipeline(opcoes = {}) {
     // BDS
     if (flags.bds) {
       log('INFO', `Iniciando download BDS ${tipoBDS}`);
-      resumo.bds = await downloadBDS({ tipo: tipoBDS });
+      resumo.bds = await downloadBDS({ tipo: tipoBDS, log });
       const difs = tipoBDS === 'diferencial' ? ` (${resumo.bds.arquivos || 0} diferencial(is))` : '';
       log('INFO', `BDS ${tipoBDS}: ${resumo.bds.baixados} baixados${difs}, ${resumo.bds.erros} erros`);
+      for (const f of resumo.bds.falhas || []) {
+        log('ERRO', `DOWNLOAD FALHOU — BDS ${tipoBDS} "${f.nome}" não baixado após ${f.tentativas} tentativa(s): ${f.mensagem}`);
+      }
       resumo.erros += resumo.bds.erros;
     }
 
     // ADS
     if (flags.ads) {
       log('INFO', 'Iniciando download ADS');
-      resumo.ads = await downloadADS({ periodo: opcoes.periodoADS });
+      resumo.ads = await downloadADS({ periodo: opcoes.periodoADS, log });
       log('INFO', `ADS: ${resumo.ads.processados} processados, ${resumo.ads.erros} erros`);
-      for (const f of resumo.ads.falhas || []) log('ERRO', `ADS "${f.nome}": ${f.mensagem}`);
+      for (const f of resumo.ads.falhas || []) {
+        log('ERRO', `DOWNLOAD FALHOU — ADS "${f.nome}" não baixado após ${f.tentativas} tentativa(s): ${f.mensagem}`);
+      }
       resumo.erros += resumo.ads.erros;
     }
 
@@ -203,9 +208,20 @@ async function executarPipeline(opcoes = {}) {
   if (resumo.naoAtualizadas?.length > 0) {
     console.log(`   ⚠️  ${resumo.naoAtualizadas.length} tabela(s) NÃO atualizada(s) nesta execução: ${resumo.naoAtualizadas.join(', ')}`);
   }
+  // Downloads que falharam mesmo após a nova tentativa: resumo no console E no arquivo de log
+  const naoBaixados = [
+    ...(resumo.bds?.falhas || []).map((f) => `BDS "${f.nome}"`),
+    ...(resumo.ads?.falhas || []).map((f) => `ADS "${f.nome}"`),
+  ];
+  if (naoBaixados.length > 0) {
+    console.log(`   ❌ ${naoBaixados.length} download(s) com falha após as tentativas: ${naoBaixados.join(', ')}`);
+  }
   if (resumo.erros > 0) console.log(`   ⚠️  ${resumo.erros} erro(s) — ver ${logFile}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
+  if (naoBaixados.length > 0) {
+    log('ERRO', `RESUMO — ${naoBaixados.length} download(s) NÃO concluído(s) (dados desatualizados): ${naoBaixados.join(', ')}`);
+  }
   log('INFO', `Pipeline concluído em ${min}m ${seg}s. Erros: ${resumo.erros}`);
   fechar();
 

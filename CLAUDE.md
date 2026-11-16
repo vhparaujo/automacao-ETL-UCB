@@ -61,6 +61,7 @@ automacao-ETL-UCB/
 │       ├── bds-diferencial.js   ← BDS diferencial: seleção, pastas, manifesto, decisão e SQL do upsert
 │       ├── agendamentos.js      ← lerAgendamentos() de schedule.json (vários crons; formato antigo aceito)
 │       ├── falha-auth.js        ← detecta refresh token inválido e grava logs/ULTIMA_FALHA_AUTH.txt
+│       ├── retentativa.js       ← comRetentativa(): nova tentativa de download (BDS e ADS)
 │       ├── ads-config.js        ← slug(), nomeArquivoADS() (arquivo_csv), montarFiltros(), compararFiltros()
 │       ├── ads-filtros.js       ← npm run ads:filtros — filtros declarados por cada ADS vs. config
 │       ├── ads-periodo.js       ← npm run ads:periodo — grava startDate/endDate no ads-filters.json
@@ -222,6 +223,19 @@ GET extract.DownloadLink
 - `modo: 'todos'` e `modo: 'selecao'` (`nomes: [...]`) são usados pela CLI.
 - O casamento de nomes é **normalizado** (`mesmoNome()` em `src/utils/nomes.js`):
   ignora acentos, maiúsculas/minúsculas, espaços, `_` e `-` — `Usuarios` = `Usuários`.
+
+### Nova tentativa de download (BDS e ADS) — `src/utils/retentativa.js`
+
+- Cada dataset BDS / relatório ADS que falha é tentado **mais uma vez** (`DOWNLOAD_TENTATIVAS=2` no
+  total, espera `DOWNLOAD_ESPERA_SEGUNDOS=30` entre elas; token renovado a cada tentativa).
+- Não repetem (falhariam igual): erro de configuração (`erroDefinitivo()` / `naoRepetir` — nome do CSV,
+  período inválido, relatório ADS inexistente), HTTP 400/403 (`erro.status`) e falha de autenticação.
+- ADS: se o job já foi concluído e só o download/extração falhou, a nova tentativa baixa o MESMO job
+  (não gera o relatório de novo).
+- `download({ log })`: o pipeline passa o logger — cada tentativa falha vira `[AVISO]` no
+  `logs/pipeline-YYYY-MM-DD.log`; a falha definitiva vira `[ERRO] DOWNLOAD FALHOU — BDS/ADS "nome" não
+  baixado após N tentativa(s): …` e o fim do pipeline grava `[ERRO] RESUMO — N download(s) NÃO concluído(s)`.
+  Os dois `download()` retornam `falhas: [{ nome, mensagem, tentativas }]`.
 
 ### Observações
 
@@ -566,6 +580,9 @@ LOG_LEVEL=info
 CSVS_DIR=./csvs
 EXPORTS_DIR=./exports
 LOGS_DIR=./logs
+# Downloads BDS/ADS: total de tentativas (1 = sem nova tentativa) e espera entre elas
+DOWNLOAD_TENTATIVAS=2
+DOWNLOAD_ESPERA_SEGUNDOS=30
 ```
 
 ---
@@ -753,7 +770,7 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
 - `npm test` roda `node --test`, que descobre `test/**/*.test.js` (sem dependências extras).
   Usa-se `node --test` sem argumento de diretório porque `node --test test/` quebra no Node 22+.
 - Os testes não acessam MySQL nem Brightspace: módulos externos são mockados via `require.cache`.
-- Funções puras testadas: `src/utils/csv.js`, `nomes.js`, `datas.js` (inclui `lerArgsPeriodo`), `ads-periodo.js`, `bds-extracts.js`,
+- Funções puras testadas: `src/utils/retentativa.js`, `src/utils/csv.js`, `nomes.js`, `datas.js` (inclui `lerArgsPeriodo`), `ads-periodo.js`, `bds-extracts.js`,
   `bds-diferencial.js`, `agendamentos.js` (inclui os crons do schedule.json real),
   `falha-auth.js`; `engine.run()` e o tratamento de falha de auth do pipeline com mocks.
 

@@ -13,6 +13,7 @@ const { selecionarExtractMaisRecente } = require('../utils/bds-extracts');
 const {
   pastaDiferencial, selecionarDiferencialDoDia, registrarNoManifesto,
 } = require('../utils/bds-diferencial');
+const { comRetentativa } = require('../utils/retentativa');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -35,7 +36,9 @@ function requisicaoAPI(url, token) {
         res.on('data', (c) => (data += c));
         res.on('end', () => {
           if (res.statusCode >= 400) {
-            return reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 300)}`));
+            const erro = new Error(`HTTP ${res.statusCode}: ${data.substring(0, 300)}`);
+            erro.status = res.statusCode;
+            return reject(erro);
           }
           try { resolve(JSON.parse(data)); }
           catch { reject(new Error(`Resposta inválida: ${data.substring(0, 200)}`)); }
@@ -66,7 +69,12 @@ function baixarArquivo(downloadUrl, destino, token) {
             req.destroy();
             return fazerRequisicao(res.headers.location, redirecionamentos + 1);
           }
-          if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode} ao baixar`));
+          if (res.statusCode >= 400) {
+            res.resume();
+            const erro = new Error(`HTTP ${res.statusCode} ao baixar`);
+            erro.status = res.statusCode;
+            return reject(erro);
+          }
 
           const total = parseInt(res.headers['content-length'] || '0', 10);
           let baixados = 0;
@@ -211,7 +219,7 @@ async function download(opcoes = {}) {
   if (selecionados.length === 0) {
     console.log('ℹ️  Nenhum dataset BDS para baixar com a seleção atual.');
     console.log('   Edite config/bds-selecao.json para adicionar datasets automáticos.');
-    return { tipo, baixados: 0, pulados: 0, erros: 0, arquivos: 0 };
+    return { tipo, baixados: 0, pulados: 0, erros: 0, arquivos: 0, falhas: [] };
   }
 
   const label = modo === 'auto' ? 'automáticos' : modo === 'todos' ? 'todos' : 'selecionados';
@@ -220,6 +228,8 @@ async function download(opcoes = {}) {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   let baixados = 0, pulados = 0, erros = 0, arquivos = 0;
+  const falhas = []; // { nome, mensagem, tentativas } — o pipeline grava no log
+  const log = opcoes.log || (() => {});
   const inicio = Date.now();
 
   for (let i = 0; i < selecionados.length; i++) {
@@ -235,18 +245,37 @@ async function download(opcoes = {}) {
     }
 
     try {
-      // Renova o token a cada dataset para evitar 401 em sessões longas
-      token = await getAccessToken();
-      const r = tipo === 'diferencial' ? await baixarDiferencialDoDia(ds, nome, token) : await baixarCompleto(ds, nome, token);
+      // Falhou? Tenta mais uma vez (src/utils/retentativa.js). O token é pedido a cada tentativa
+      // para evitar 401 em sessões longas; o ZIP e os CSVs são sobrescritos na nova tentativa.
+      const { valor: r, tentativas } = await comRetentativa(
+        async () => {
+          token = await getAccessToken();
+          return tipo === 'diferencial' ? baixarDiferencialDoDia(ds, nome, token) : baixarCompleto(ds, nome, token);
+        },
+        {
+          tentativas: opcoes.tentativas,
+          esperaMs: opcoes.esperaMs,
+          aoFalhar: ({ tentativa, tentativas: total, erro, vaiRepetir, esperaMs }) => {
+            if (!vaiRepetir) return;
+            const msg = `BDS ${tipo} "${nome}": tentativa ${tentativa}/${total} falhou (${erro.message.substring(0, 200)}) — nova tentativa em ${Math.round(esperaMs / 1000)}s`;
+            process.stdout.write(`\n      🔁 Falhou (${erro.message.substring(0, 80)}) — tentando de novo em ${Math.round(esperaMs / 1000)}s...\n`);
+            log('AVISO', msg);
+          },
+        }
+      );
       if (r.pulado) {
         process.stdout.write(` — ${r.pulado}, pulando\n`);
         pulados++;
         continue;
       }
+      if (tentativas > 1) log('INFO', `BDS ${tipo} "${nome}": baixado na tentativa ${tentativas}`);
       baixados++;
       arquivos += r.arquivos;
     } catch (e) {
-      process.stdout.write(`\n      ⚠️  ${e.message.substring(0, 80)}\n\n`);
+      const tentativas = e.tentativas || 1;
+      const mensagem = e.message.substring(0, 300);
+      process.stdout.write(`\n      ❌ Falhou após ${tentativas} tentativa(s): ${e.message.substring(0, 120)}\n\n`);
+      falhas.push({ nome, mensagem, tentativas });
       erros++;
     }
   }
@@ -256,7 +285,10 @@ async function download(opcoes = {}) {
   const extra = tipo === 'diferencial' ? ` (${arquivos} diferencial(is))` : '';
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`✅ BDS ${tipo}: ${baixados} baixados${extra}, ${pulados} pulados, ${erros} erros — ${min}m ${seg}s`);
-  return { tipo, baixados, pulados, erros, arquivos };
+  if (falhas.length) {
+    console.log(`❌ ${falhas.length} dataset(s) NÃO baixado(s): ${falhas.map((f) => f.nome).join(', ')}`);
+  }
+  return { tipo, baixados, pulados, erros, arquivos, falhas };
 }
 
 if (require.main === module) {

@@ -11,6 +11,7 @@ const { obterVersaoLP } = require('../utils/versao-api');
 const { resolverPeriodo, lerArgsPeriodo } = require('../utils/datas');
 const { mesmoNome } = require('../utils/nomes');
 const { montarFiltros, nomeArquivoADS } = require('../utils/ads-config');
+const { comRetentativa, erroDefinitivo } = require('../utils/retentativa');
 
 const HOST = process.env.BRIGHTSPACE_HOST || 'https://ava.catolica.edu.br';
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -40,7 +41,9 @@ function requisicao(url, token, opcoes = {}) {
         res.on('data', (c) => (data += c));
         res.on('end', () => {
           if (res.statusCode >= 400) {
-            return reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 300)}`));
+            const erro = new Error(`HTTP ${res.statusCode}: ${data.substring(0, 300)}`);
+            erro.status = res.statusCode;
+            return reject(erro);
           }
           try { resolve(data ? JSON.parse(data) : {}); }
           catch { reject(new Error(`Resposta inválida: ${data.substring(0, 200)}`)); }
@@ -92,7 +95,12 @@ function baixarArquivo(downloadUrl, destino, token) {
             req.destroy();
             return fazerRequisicao(res.headers.location, redirecionamentos + 1);
           }
-          if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode} ao baixar`));
+          if (res.statusCode >= 400) {
+            res.resume();
+            const erro = new Error(`HTTP ${res.statusCode} ao baixar`);
+            erro.status = res.statusCode;
+            return reject(erro);
+          }
 
           const fileStream = fs.createWriteStream(destino);
           pipeline(res, fileStream).then(resolve).catch(reject);
@@ -130,7 +138,31 @@ function aplicarPeriodo(config, periodo) {
   return efetivo;
 }
 
-async function processarJob(nome, config, versao) {
+// Erros de configuração (nome do CSV, período) se repetiriam iguais: não ganham nova tentativa
+function validarConfig(fn) {
+  try { return fn(); }
+  catch (e) { throw Object.assign(erroDefinitivo(e.message), { cause: e }); }
+}
+
+// Baixa o ZIP de um job concluído e extrai o CSV com o nome fixo
+async function baixarJobConcluido(downloadUrl, nomeFixo) {
+  const zipPath = path.join(ZIPS_DIR, `ADS_${path.basename(nomeFixo, '.csv')}.zip`);
+  const token = await getAccessToken();
+  await baixarArquivo(downloadUrl, zipPath, token);
+  await extrairCsvs(zipPath, CSVS_DIR, () => nomeFixo); // streaming, salva com o nome fixo
+  fs.unlinkSync(zipPath);
+  return nomeFixo;
+}
+
+// estado: compartilhado entre as tentativas de download(). Se o job já foi concluído no
+// Brightspace e só o download/extração falhou, a nova tentativa baixa o MESMO job em vez de
+// gerar o relatório de novo.
+async function processarJob(nome, config, versao, estado = {}) {
+  if (estado.downloadUrl) {
+    console.log(`      ♻️  Reaproveitando o job ${estado.jobId} (já concluído) — baixando de novo`);
+    return baixarJobConcluido(estado.downloadUrl, estado.nomeFixo);
+  }
+
   // O access token dura 1 h e um job pode levar mais de 30 min: pede um token válido antes de
   // cada chamada (getAccessToken() usa o cache e só renova quando falta < 60 s para expirar).
   // Antes o token era obtido uma vez no início — numa execução de 44 min os últimos relatórios
@@ -139,9 +171,9 @@ async function processarJob(nome, config, versao) {
   // Resolve datas relativas ("hoje", "-180d", "inicio_semestre"…) no momento da execução.
   // Expressão inválida lança erro aqui — download() registra e segue para o próximo relatório.
   // Nome do CSV de saída (valida "arquivo_csv" antes de criar o job)
-  const nomeFixo = nomeArquivoADS(nome, config);
+  const nomeFixo = validarConfig(() => nomeArquivoADS(nome, config));
 
-  const periodo = resolverPeriodo(config, new Date());
+  const periodo = validarConfig(() => resolverPeriodo(config, new Date()));
   const configEfetiva = { ...config, ...periodo };
   if (periodo.startDate || periodo.endDate) {
     console.log(`      📅 Período: ${periodo.startDate || '(sem início)'} → ${periodo.endDate || '(sem fim)'}`);
@@ -154,7 +186,7 @@ async function processarJob(nome, config, versao) {
   const match = listaADS.find((r) => mesmoNome(r.Name || '', nome));
   if (!match) {
     const nomes = listaADS.map((r) => r.Name).join(', ');
-    throw new Error(`Relatório "${nome}" não encontrado. Disponíveis: ${nomes}`);
+    throw erroDefinitivo(`Relatório "${nome}" não encontrado. Disponíveis: ${nomes}`);
   }
 
   // ativo, automatico, arquivo_csv e chaves "_*" nunca vão para a API
@@ -189,13 +221,8 @@ async function processarJob(nome, config, versao) {
 
     if (pronto) {
       process.stdout.write('\n');
-      const zipPath = path.join(ZIPS_DIR, `ADS_${path.basename(nomeFixo, '.csv')}.zip`);
-      token = await getAccessToken();
-      await baixarArquivo(downloadUrl, zipPath, token);
-
-      await extrairCsvs(zipPath, CSVS_DIR, () => nomeFixo); // streaming, salva com o nome fixo
-      fs.unlinkSync(zipPath);
-      return nomeFixo;
+      Object.assign(estado, { jobId, downloadUrl, nomeFixo });
+      return baixarJobConcluido(downloadUrl, nomeFixo);
     }
   }
 
@@ -233,7 +260,7 @@ async function download(opcoes = {}) {
   if (relatorios.length === 0) {
     console.log('ℹ️  Nenhum relatório ADS para baixar com a seleção atual.');
     console.log('   Edite config/ads-filters.json e defina "automatico": true nos desejados.');
-    return { processados: 0, erros: 0 };
+    return { processados: 0, erros: 0, falhas: [] };
   }
 
   await getAccessToken(); // valida a autenticação antes de começar
@@ -248,23 +275,41 @@ async function download(opcoes = {}) {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   let processados = 0, erros = 0;
-  const falhas = []; // { nome, mensagem } — o pipeline grava no log
+  const falhas = []; // { nome, mensagem, tentativas } — o pipeline grava no log
+  const log = opcoes.log || (() => {});
 
   for (const [nome, config] of relatorios) {
     console.log(`\n  🚀 ${nome}`);
+    const estado = {}; // job concluído, reaproveitado se só o download falhar
     try {
-      const arquivo = await processarJob(nome, aplicarPeriodo(config, opcoes.periodo), versao);
+      // Falhou? Tenta mais uma vez (src/utils/retentativa.js) — erros de configuração não repetem
+      const { valor: arquivo, tentativas } = await comRetentativa(
+        () => processarJob(nome, aplicarPeriodo(config, opcoes.periodo), versao, estado),
+        {
+          tentativas: opcoes.tentativas,
+          esperaMs: opcoes.esperaMs,
+          aoFalhar: ({ tentativa, tentativas: total, erro, vaiRepetir, esperaMs }) => {
+            if (!vaiRepetir) return;
+            const espera = Math.round(esperaMs / 1000);
+            console.log(`  🔁 Tentativa ${tentativa}/${total} falhou (${erro.message.substring(0, 120)}) — tentando de novo em ${espera}s...`);
+            log('AVISO', `ADS "${nome}": tentativa ${tentativa}/${total} falhou (${erro.message.substring(0, 200)}) — nova tentativa em ${espera}s`);
+          },
+        }
+      );
       console.log(`  ✅ ${nome} — extraído para ${path.join(CSVS_DIR, arquivo)}`);
+      if (tentativas > 1) log('INFO', `ADS "${nome}": baixado na tentativa ${tentativas}`);
       processados++;
     } catch (e) {
-      console.log(`  ❌ ${e.message.substring(0, 300)}`);
-      falhas.push({ nome, mensagem: e.message.substring(0, 300) });
+      const tentativas = e.tentativas || 1;
+      console.log(`  ❌ Falhou após ${tentativas} tentativa(s): ${e.message.substring(0, 300)}`);
+      falhas.push({ nome, mensagem: e.message.substring(0, 300), tentativas });
       erros++;
     }
   }
 
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`✅ ADS: ${processados} processados, ${erros} erros`);
+  if (falhas.length) console.log(`❌ ${falhas.length} relatório(s) NÃO baixado(s): ${falhas.map((f) => f.nome).join(', ')}`);
   return { processados, erros, falhas };
 }
 
