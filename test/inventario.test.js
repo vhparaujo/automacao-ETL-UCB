@@ -88,7 +88,7 @@ test('analisarCSV conta registros, detecta datas/IDs e o markdown não expõe da
   assert.equal(userId.naoNumericos, 0);
   assert.equal(orgDefined.naoNumericos, 1);
 
-  const md = gerarMarkdown([{ arquivo: 'Users.csv', mb: '0.0', tabela: 'users', tipo: 'x', schemaFixo: true, origem: 'BDS', ...a }]);
+  const md = gerarMarkdown([{ arquivo: 'Users.csv', mb: '0.0', origem: 'BDS', ...a }]);
   for (const segredo of ['Fulano', 'Beltrano', 'Ciclano', 'exemplo.com', 'A123', '456', '789']) {
     assert.ok(!md.includes(segredo), `inventário expôs "${segredo}"`);
   }
@@ -107,11 +107,11 @@ test('analisarCSV respeita o limite de amostra mas conta todos os registros', as
   assert.deepEqual(a.datas[0].formatos, { 'ISO sem fuso': 1000 });
 });
 
-test('identificarOrigem: ADS pelo nome gerado / arquivo_csv, BDS pela seleção e aliases', () => {
+test('identificarOrigem: ADS pelo nome gerado / arquivo_csv, BDS pelo manifesto ou pela seleção', () => {
   const ctx = {
     adsConfig: { _x: 'y', 'Notas finais': {}, 'Premiações emitidas': { arquivo_csv: 'ads_premiacoes_emitidas' } },
     bdsSelecao: { automaticos: ['Usuários', 'Premiações emitidas'] },
-    schemas: { Users: { tabela: 'users', aliases: ['Usuários'], colunas: {} } },
+    manifesto: { 'Users.csv': { dataset: 'Usuários', tipo: 'Full' } },
   };
   assert.equal(identificarOrigem('csvs/notas_finais.csv', ctx), 'ADS — "Notas finais"');
   assert.equal(identificarOrigem('csvs/ads_premiacoes_emitidas.csv', ctx), 'ADS — "Premiações emitidas"');

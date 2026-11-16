@@ -1,15 +1,13 @@
 'use strict';
 
-// Utilitários puros para leitura de cabeçalhos CSV (sem dependências externas).
-
-const LIMITE_IDENTIFICADOR_MYSQL = 64;
+// Utilitários puros para leitura de CSV (sem dependências externas) — usados pelo inventário.
 
 // Faz o parse de UMA linha CSV seguindo a RFC 4180:
 //   - campos separados por vírgula;
 //   - campos entre aspas podem conter vírgulas;
 //   - "" dentro de um campo entre aspas representa uma aspa literal.
 // Remove o BOM (﻿) do início e o \r final, se houver.
-// Espaços em volta de cada campo são removidos (comportamento herdado do loader).
+// Espaços em volta de cada campo são removidos.
 function parseLinhaCSV(linha) {
   const texto = String(linha).replace(/^﻿/, '').replace(/\r$/, '');
   const campos = [];
@@ -42,37 +40,6 @@ function parseLinhaCSV(linha) {
 
   campos.push(atual.trim());
   return campos;
-}
-
-// Trunca os nomes de coluna para o limite do MySQL (64 caracteres) e desambigua
-// colisões com sufixo _2, _3… (mantendo o total dentro do limite).
-// A comparação é case-insensitive, pois o MySQL trata nomes de coluna assim.
-// Retorna { nomes, colisoes }, onde colisoes = [{ original, final }].
-function nomesColunasUnicos(colunas, limite = LIMITE_IDENTIFICADOR_MYSQL) {
-  const usados = new Set();
-  const nomes = [];
-  const colisoes = [];
-
-  for (const original of colunas) {
-    let nome = original.substring(0, limite);
-
-    if (usados.has(nome.toLowerCase())) {
-      let n = 2;
-      let candidato;
-      do {
-        const sufixo = `_${n}`;
-        candidato = original.substring(0, limite - sufixo.length) + sufixo;
-        n++;
-      } while (usados.has(candidato.toLowerCase()));
-      colisoes.push({ original, final: candidato });
-      nome = candidato;
-    }
-
-    usados.add(nome.toLowerCase());
-    nomes.push(nome);
-  }
-
-  return { nomes, colisoes };
 }
 
 // Parser CSV incremental (RFC 4180) para arquivos grandes, alimentado em pedaços (chunks).
@@ -152,41 +119,7 @@ function criarParserCSV(onRegistro) {
   return { push, end };
 }
 
-// Detecta o terminador de linha olhando a primeira quebra FORA de aspas do texto inicial do arquivo.
-// Retorna '\r\n', '\n' ou '\r'; '\n' quando não há quebra no trecho (padrão anterior).
-function detectarTerminadorLinha(texto) {
-  const t = String(texto ?? '');
-  let entreAspas = false;
-  for (let i = 0; i < t.length; i++) {
-    const ch = t[i];
-    if (ch === '"') entreAspas = !entreAspas; // "" (aspa escapada) alterna duas vezes: sem efeito
-    else if (!entreAspas && ch === '\n') return '\n';
-    else if (!entreAspas && ch === '\r') {
-      if (i + 1 >= t.length) return '\r\n'; // \r no fim do trecho lido: assume \r\n (caso comum)
-      return t[i + 1] === '\n' ? '\r\n' : '\r';
-    }
-  }
-  return '\n';
-}
-
-// Lê só o início do arquivo (64 KB) e detecta o terminador de linha
-function detectarTerminadorArquivo(caminho, bytes = 64 * 1024) {
-  const fs = require('node:fs');
-  const fd = fs.openSync(caminho, 'r');
-  try {
-    const buffer = Buffer.alloc(bytes);
-    const lidos = fs.readSync(fd, buffer, 0, bytes, 0);
-    return detectarTerminadorLinha(buffer.subarray(0, lidos).toString('utf8'));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 module.exports = {
   parseLinhaCSV,
-  nomesColunasUnicos,
   criarParserCSV,
-  detectarTerminadorLinha,
-  detectarTerminadorArquivo,
-  LIMITE_IDENTIFICADOR_MYSQL,
 };

@@ -135,7 +135,7 @@ async function baixarCompleto(ds, nome, token) {
 
   process.stdout.write('\n');
   const { bytes, csvs } = await baixarExtract(latest, nome, CSVS_DIR, token);
-  // O loader usa o manifesto para saber de qual completo veio cada tabela (base dos diferenciais)
+  // Manifesto: de qual extract completo veio cada CSV (base dos diferenciais; usado também no inventário)
   registrarNoManifesto(CSVS_DIR, csvs, { dataset: nome, tipo: 'Full', criado: dataExtract });
   const quando = dataExtract ? ` — extract de ${dataExtract}` : '';
   console.log(`      ✅ ${mb(bytes)} — ${csvs.length} CSV(s)${quando}\n`);

@@ -1,5 +1,5 @@
 {
-  "_instrucoes": "Agendamentos do 'npm start' (node-cron, no fuso abaixo). Cada item roda o pipeline com o que estiver marcado: bds = \"completo\" | \"diferencial\" | false; ads = true | false. Carga no MySQL e transformações seguem 'pipeline' abaixo. Execuções que coincidirem rodam em fila, uma depois da outra.",
+  "_instrucoes": "Agendamentos do 'npm start' (node-cron, no fuso abaixo). Cada item baixa o que estiver marcado: bds = \"completo\" | \"diferencial\" | false; ads = true | false. 'pipeline' abaixo é a chave geral (false desliga BDS ou ADS em todos os agendamentos). Execuções que coincidirem rodam em fila, uma depois da outra.",
   "_horarios_brightspace": "Na UCB o Brightspace gera o BDS completo toda segunda ~8h20 e os diferenciais todo dia ~5h20 (Brasília). Agende depois desses horários. O diferencial baixa só o gerado no dia.",
   "_exemplos_cron": {
     "todo_dia_6h": "0 6 * * *",
@@ -28,9 +28,6 @@
   ],
   "pipeline": {
     "baixar_bds": true,
-    "baixar_ads": true,
-    "carregar_mysql": true,
-    "executar_transformacoes": true,
-    "exportar_csvs": true
+    "baixar_ads": true
   }
 }

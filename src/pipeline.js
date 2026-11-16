@@ -1,5 +1,9 @@
 'use strict';
 
+// Orquestra os downloads: autenticação → arquiva csvs/ → BDS (completo ou diferencial) → ADS →
+// inventário → resumo no console e em logs/pipeline-YYYY-MM-DD.log. Com --watch, agenda pelo
+// config/schedule.json (node-cron). Os CSVs ficam em csvs/ para quem for consumi-los.
+
 require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
@@ -8,9 +12,6 @@ const cron = require('node-cron');
 const { getAccessToken } = require('./auth/oauth');
 const { download: downloadBDS } = require('./extractors/bds');
 const { download: downloadADS } = require('./extractors/ads');
-const { load, listarTabelas } = require('./loader/mysql-loader');
-const { run: runTransforms, lerArgsSomente } = require('./transforms/engine');
-const { notificarViews } = require('./exporter/powerbi');
 const {
   ARQUIVO_ALERTA,
   MENSAGEM_REAUTENTICAR,
@@ -20,7 +21,7 @@ const {
 } = require('./utils/falha-auth');
 const { gerarInventario } = require('./utils/inventario');
 const { lerArgsPeriodo } = require('./utils/datas');
-const { arquivarCsvsAnteriores, tabelasNaoAtualizadas, PASTA_ANTERIOR } = require('./utils/pasta-csvs');
+const { arquivarCsvsAnteriores, PASTA_ANTERIOR } = require('./utils/pasta-csvs');
 const { lerAgendamentos, descreverEtapas } = require('./utils/agendamentos');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
@@ -59,19 +60,16 @@ async function executarPipeline(opcoes = {}) {
   const flags = {
     bds: opcoes.bds ?? pipe.baixar_bds ?? true,
     ads: opcoes.ads ?? pipe.baixar_ads ?? true,
-    load: opcoes.load ?? pipe.carregar_mysql ?? true,
-    transform: opcoes.transform ?? pipe.executar_transformacoes ?? true,
-    exportarCsvs: opcoes.exportarCsvs ?? pipe.exportar_csvs ?? true,
   };
   // BDS completo (padrão) ou diferencial (--diferencial / agendamento com "bds": "diferencial")
   const tipoBDS = opcoes.bdsTipo || 'completo';
 
-  console.log('\n🚀 Iniciando pipeline Brightspace ETL —', new Date().toLocaleString('pt-BR'));
+  console.log('\n🚀 Iniciando download Brightspace —', new Date().toLocaleString('pt-BR'));
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   log('INFO', `Pipeline iniciado. Log: ${logFile}`);
   if (opcoes.agendamento) log('INFO', `Agendamento: ${opcoes.agendamento}`);
 
-  const resumo = { bds: null, ads: null, load: null, transform: null, erros: 0, falhaAuth: false };
+  const resumo = { bds: null, ads: null, erros: 0, falhaAuth: false };
 
   try {
     // Validar autenticação
@@ -104,7 +102,7 @@ async function executarPipeline(opcoes = {}) {
     log('INFO', 'Autenticação OK');
     limparFalhaAuth(LOGS_DIR);
 
-    // Pipeline completo: a execução anterior vai para csvs/_anterior/ para não ser recarregada.
+    // Pipeline completo: a execução anterior vai para csvs/_anterior/ (csvs/ fica só com o que veio agora).
     // Execuções parciais (--apenas-*) e downloads sob demanda pela CLI não mexem na pasta.
     if (opcoes.completo && (flags.bds || flags.ads)) {
       const movidos = arquivarCsvsAnteriores(CSVS_DIR);
@@ -133,37 +131,6 @@ async function executarPipeline(opcoes = {}) {
         log('ERRO', `DOWNLOAD FALHOU — ADS "${f.nome}" não baixado após ${f.tentativas} tentativa(s): ${f.mensagem}`);
       }
       resumo.erros += resumo.ads.erros;
-    }
-
-    // Carga MySQL
-    if (flags.load) {
-      log('INFO', 'Iniciando carga MySQL');
-      resumo.load = await load();
-      log('INFO', `MySQL: ${resumo.load.carregados} tabelas, ${resumo.load.totalLinhas} linhas`);
-      const dif = resumo.load.diferencial;
-      if (dif && (dif.aplicados || dif.pulados || dif.erros)) {
-        log('INFO', `Diferencial: ${dif.aplicados} aplicado(s) em ${dif.tabelas.join(', ') || '—'}, ${dif.pulados} pulado(s), ${dif.erros} erro(s)`);
-      }
-      resumo.erros += resumo.load.erros;
-
-      // Tabelas do banco cujo CSV não veio nesta execução (dados possivelmente defasados)
-      try {
-        resumo.naoAtualizadas = tabelasNaoAtualizadas(await listarTabelas(), resumo.load.tabelas);
-        if (resumo.naoAtualizadas.length > 0) {
-          log('AVISO', `Tabelas NÃO atualizadas nesta execução (CSV não baixado): ${resumo.naoAtualizadas.join(', ')}`);
-        }
-      } catch (e) {
-        log('AVISO', `Não foi possível listar as tabelas do MySQL: ${e.message}`);
-      }
-    }
-
-    // Transformações
-    if (flags.transform) {
-      log('INFO', 'Iniciando transformações');
-      resumo.transform = await runTransforms({ exportarCsvs: flags.exportarCsvs });
-      log('INFO', `Transformações: ${resumo.transform.executadas} executadas, ${resumo.transform.puladas} puladas`);
-      resumo.erros += resumo.transform.erros;
-      await notificarViews(resumo.transform.views);
     }
 
     // Inventário dos CSVs desta execução (só no pipeline completo) → exports/_inventario_csvs.md
@@ -195,19 +162,7 @@ async function executarPipeline(opcoes = {}) {
     console.log(`   📦 BDS ${resumo.bds.tipo || 'completo'}: ${resumo.bds.baixados} datasets${difs}`);
   }
   if (resumo.ads) console.log(`   📊 ADS: ${resumo.ads.processados} relatórios`);
-  if (resumo.load) console.log(`   🗄️  MySQL: ${resumo.load.carregados} tabelas — ${(resumo.load.totalLinhas || 0).toLocaleString('pt-BR')} linhas`);
-  if (resumo.load?.diferencial?.aplicados) {
-    console.log(`   🔁 Diferencial: ${resumo.load.diferencial.aplicados} aplicado(s) → ${resumo.load.diferencial.tabelas.join(', ')}`);
-  }
-  if (resumo.transform) {
-    const puladas = resumo.transform.puladas ? ` | ⏭️  ${resumo.transform.puladas} puladas (exportar_csvs = false)` : '';
-    console.log(`   🔧 Transformações: ${resumo.transform.executadas} executadas${puladas}`);
-    if (resumo.transform.views?.length) console.log(`   📊 Views atualizadas (PowerBI): ${resumo.transform.views.join(', ')}`);
-  }
   if (resumo.inventario) console.log(`   📒 Inventário: ${resumo.inventario.arquivo}`);
-  if (resumo.naoAtualizadas?.length > 0) {
-    console.log(`   ⚠️  ${resumo.naoAtualizadas.length} tabela(s) NÃO atualizada(s) nesta execução: ${resumo.naoAtualizadas.join(', ')}`);
-  }
   // Downloads que falharam mesmo após a nova tentativa: resumo no console E no arquivo de log
   const naoBaixados = [
     ...(resumo.bds?.falhas || []).map((f) => `BDS "${f.nome}"`),
@@ -230,7 +185,7 @@ async function executarPipeline(opcoes = {}) {
 
 // Agendamentos de config/schedule.json → "agendamentos" (ver src/utils/agendamentos.js).
 // As execuções entram numa fila: se uma ainda estiver rodando (ex.: ADS das 6h às 9h de segunda),
-// a próxima espera ela terminar em vez de rodar junto e disputar csvs/ e o MySQL.
+// a próxima espera ela terminar em vez de rodar junto e disputar csvs/.
 function iniciarAgendamento() {
   const config = JSON.parse(fs.readFileSync('config/schedule.json', 'utf8'));
   let lidos;
@@ -292,10 +247,8 @@ function iniciarAgendamento() {
 if (require.main === module) {
   const args = process.argv.slice(2);
 
-  let somente = null;
   let periodoADS = null;
   try {
-    somente = lerArgsSomente(args);
     // --inicio/--fim: sobrescrevem startDate/endDate de todos os ADS só nesta execução
     periodoADS = lerArgsPeriodo(args);
     if (periodoADS && args.includes('--watch')) {
@@ -308,30 +261,15 @@ if (require.main === module) {
 
   if (args.includes('--watch')) {
     iniciarAgendamento();
-  } else if (somente) {
-    // npm run transform -- --so <nome>: roda só as transformações pedidas, direto no MySQL.
-    // Não autentica no Brightspace, não baixa nem carrega nada — para o analista testar a sua query.
-    runTransforms({ somente })
-      .then(async (r) => {
-        await notificarViews(r.views);
-        if (r.erros > 0) process.exitCode = 1;
-      })
-      .catch((e) => { console.error('❌', e.message); process.exit(1); });
   } else {
+    const parcial = args.some((a) => a.startsWith('--apenas'));
     const opcoes = {
-      bds: args.includes('--apenas-bds') || !args.some((a) => a.startsWith('--apenas')),
-      ads: args.includes('--apenas-ads') || !args.some((a) => a.startsWith('--apenas')),
-      load: args.includes('--apenas-load') || !args.some((a) => a.startsWith('--apenas')),
-      transform: args.includes('--apenas-transform') || !args.some((a) => a.startsWith('--apenas')),
+      bds: !parcial || args.includes('--apenas-bds'),
+      ads: !parcial || args.includes('--apenas-ads'),
     };
 
-    if (args.includes('--apenas-bds')) { opcoes.ads = false; opcoes.load = false; opcoes.transform = false; }
-    if (args.includes('--apenas-ads')) { opcoes.bds = false; opcoes.load = false; opcoes.transform = false; }
-    if (args.includes('--apenas-load')) { opcoes.bds = false; opcoes.ads = false; opcoes.transform = false; }
-    if (args.includes('--apenas-transform')) { opcoes.bds = false; opcoes.ads = false; opcoes.load = false; }
-
     // Sem --apenas-* = pipeline completo (arquiva csvs/ antes de baixar e roda o inventário no fim)
-    opcoes.completo = !args.some((a) => a.startsWith('--apenas'));
+    opcoes.completo = !parcial;
     opcoes.periodoADS = periodoADS;
     // --diferencial: baixa o BDS diferencial do dia em vez do completo
     opcoes.bdsTipo = args.includes('--diferencial') ? 'diferencial' : 'completo';

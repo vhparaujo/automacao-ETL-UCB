@@ -1,18 +1,16 @@
-# Brightspace ETL — UCB
+# Brightspace Downloads — UCB
 
-Automação do pipeline de dados do Brightspace (D2L) da Universidade Católica de Brasília. Substitui o processo manual de baixar CSVs pelo AVA → rodar SQL → atualizar PowerBI.
+Automação do download dos dados do Brightspace (D2L) da Universidade Católica de Brasília. Substitui o processo manual de baixar os CSVs pelo AVA.
 
-**Stack:** Node.js 18+ · MySQL · node-cron
+**Stack:** Node.js 18+ · node-cron
 
 ---
 
 ## O que faz
 
-1. **Extrai** os 137 datasets automáticos (BDS) e relatórios sob demanda (ADS) via API Brightspace
-2. **Carrega** os CSVs no MySQL usando `LOAD DATA LOCAL INFILE`
-3. **Transforma** os dados executando queries `.sql` configuráveis
-4. **Exporta** resultados como CSVs e atualiza views do PowerBI
-5. **Agenda** tudo para rodar automaticamente toda madrugada
+1. **Baixa** os datasets automáticos (BDS — completo semanal e diferencial diário) e os relatórios sob demanda (ADS) via API Brightspace, salvando os CSVs em `csvs/`
+2. **Agenda** os downloads para rodarem automaticamente (node-cron)
+3. **Registra** cada execução em `logs/` e gera um inventário dos CSVs baixados
 
 ---
 
@@ -24,22 +22,8 @@ npm install
 
 # Copiar e preencher as credenciais
 cp .env.example .env
-# edite .env com suas credenciais do Brightspace e MySQL
+# edite .env com suas credenciais do Brightspace
 ```
-
-### MySQL (Docker)
-
-O MySQL roda num container definido em `docker-compose.yml` (MySQL 8.4, `local_infile` já habilitado, utf8mb4). Com o Docker Desktop aberto:
-
-```bash
-npm run db:up     # cria/sobe o container etl-ucb-mysql em 127.0.0.1:3307 e espera ficar saudável
-npm run db:down   # para o container (os dados ficam no volume etl-ucb-mysql-data)
-npm run db:logs   # acompanha o log do MySQL
-```
-
-O banco, o usuário e a senha vêm do `.env` (`DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`) e são criados na primeira inicialização. A porta só aceita conexões da própria máquina. O container tem `restart: unless-stopped`, então volta sozinho quando o Docker Desktop abre — mas o Docker Desktop precisa estar aberto no horário do agendamento.
-
-> Mudar `DB_USER`/`DB_PASSWORD` depois da primeira inicialização não altera o usuário já criado no volume. Para recriar do zero: `docker compose down -v` (**apaga os dados**) e `npm run db:up`; depois rode `npm run load` para recarregar os CSVs.
 
 ---
 
@@ -75,16 +59,15 @@ npm run cli
 
 ```
 ╔══════════════════════════════════════════╗
-║   Brightspace ETL — UCB  v1.0            ║
+║   Brightspace Downloads — UCB  v1.0      ║
 ╚══════════════════════════════════════════╝
 
   [1] Configurar autenticação OAuth
   [2] Gerenciar datasets automáticos (BDS/ADS)
   [3] Configurar agendamento
-  [4] Gerenciar transformações SQL
-  [5] Rodar pipeline agora
-  [6] Download sob demanda
-  [7] Ver último log
+  [4] Rodar downloads automáticos agora
+  [5] Download sob demanda
+  [6] Ver último log
   [0] Sair
 ```
 
@@ -123,13 +106,13 @@ Submenu com 3 opções:
 ### [3] Configurar agendamento
 
 O `npm start` roda os agendamentos de `config/schedule.json` → `agendamentos`. Cada um diz o que baixar
-(`"bds": "completo" | "diferencial" | false`, `"ads": true | false`); carga no MySQL e transformações seguem
-`pipeline`. Padrão (alinhado aos horários em que o Brightspace da UCB gera os BDS):
+(`"bds": "completo" | "diferencial" | false`, `"ads": true | false`); `pipeline.baixar_bds` /
+`pipeline.baixar_ads` são a chave geral. Padrão (alinhado aos horários em que o Brightspace da UCB gera os BDS):
 
 | Agendamento | Cron | O que roda |
 |-------------|------|-----------|
-| BDS diferencial + ADS | `0 6 * * *` | Todo dia 6h — BDS **diferencial do dia** (gerado ~5h20) + ADS + carga + transformações |
-| BDS completo | `0 9 * * 1` | Segunda 9h — BDS **completo** (gerado ~8h20) + carga + transformações |
+| BDS diferencial + ADS | `0 6 * * *` | Todo dia 6h — BDS **diferencial do dia** (gerado ~5h20) + ADS |
+| BDS completo | `0 9 * * 1` | Segunda 9h — BDS **completo** (gerado ~8h20) |
 
 Execuções que coincidirem (ex.: o das 6h de segunda ainda rodando às 9h) entram em fila. No menu:
 **[A]** ativa/desativa um agendamento, **[C]** troca o cron, **[P]** restaura o padrão.
@@ -138,64 +121,41 @@ como BDS completo + ADS.
 
 #### BDS completo × diferencial
 
-- **Completo:** sai 1x por semana (segunda) com a tabela inteira; é carregado como sempre (DROP + CREATE + LOAD).
-- **Diferencial:** sai todo dia com só as linhas **alteradas**, no mesmo CSV/colunas do completo. É aplicado
-  como *upsert*: carrega em uma tabela temporária `_dif_<tabela>`, apaga da tabela as linhas com a mesma
-  chave e insere as novas. As chaves estão em `config/bds-diferencial.json` (logs usam todas as colunas).
+- **Completo:** sai 1x por semana (segunda) com a tabela inteira; os CSVs vão para `csvs/` e
+  `csvs/_bds_extracts.json` registra de qual extract veio cada um.
+- **Diferencial:** sai todo dia com só as linhas **alteradas**, no mesmo CSV/colunas do completo.
 - O download baixa **só o diferencial gerado hoje** (fuso de Brasília), em
   `csvs/diferencial/` (mesmo nome do CSV do completo, ex.: `Users.csv`; o do dia seguinte sobrescreve) —
   os de dias anteriores não são baixados. Se o de hoje ainda não
   saiu, o dataset é pulado (`o diferencial de hoje ainda não foi gerado`). Na segunda depois das ~8h20 o
-  diferencial do dia já está no completo e também é pulado. A carga pula diferenciais já aplicados
-  (controle na tabela `_etl_bds_estado`).
-- **Dia perdido não é recuperado:** se o diferencial de um dia não foi aplicado (computador desligado, erro),
-  a carga do dia seguinte avisa (`⚠️ o diferencial anterior (…) não foi aplicado`) e as alterações dele
-  faltam até o completo de segunda — ou rode `npm run bds` + `npm run load` para corrigir na hora.
-- Se a tabela não estiver com o completo mais recente, a carga avisa
-  (`⚠️ o completo de … não foi carregado`) — rode `npm run bds` + `npm run load`.
+  diferencial do dia já está no completo e também é pulado.
+- `csvs/diferencial/_bds_extracts.json` registra, para cada CSV, a data do diferencial (`criado`), a do
+  completo em que ele se baseia (`base`) e a do diferencial anterior na API (`anterior`) — quem consome
+  os CSVs usa isso para saber se perdeu algum dia (**dia perdido não é baixado de novo**).
 - O diferencial **não** traz exclusões físicas (ex.: desinscrição); exclusões lógicas (`IsDeleted`,
-  `DateDeleted`) chegam normalmente. O completo de segunda corrige o restante.
-- Dataset novo no `bds-selecao.json`: inclua a chave dele em `config/bds-diferencial.json`, senão o
-  diferencial dele não é aplicado (erro no log) e a tabela fica como no último completo.
+  `DateDeleted`) chegam normalmente. O completo de segunda traz o estado inteiro.
 
 ---
 
-### [4] Gerenciar transformações SQL
+### [4] Rodar downloads automáticos agora
 
-Lista todas as transformações configuradas em `config/transforms.json` com seu status (`✅` ativo / `⏸️` inativo).
-
-- **[T]** Ativar/desativar uma transformação pelo número
-
-Para adicionar uma nova transformação:
-1. Crie o arquivo `.sql` em `src/transforms/queries/`
-2. Adicione a entrada em `config/transforms.json` com `nome`, `arquivo`, `tipo` (`view`, `exportar_csv` ou `table`) e `ativo: true`
-3. Teste só ela: `npm run transform -- --so <nome>`
-
-Passo a passo completo para analistas (tipos de coluna, filtros típicos dos BDS, modelos de `.sql`, privacidade e problemas conhecidos): **[GUIA_ANALISTA.md](GUIA_ANALISTA.md)**.
-
----
-
-### [5] Rodar pipeline agora
-
-Executa o pipeline manualmente, sem esperar o agendamento:
+Executa os downloads manualmente, sem esperar o agendamento:
 
 | Opção | Equivalente npm | O que faz |
 |-------|----------------|-----------|
-| [1] Pipeline completo | `npm run pipeline` | Arquiva `csvs/` em `csvs/_anterior/` + BDS + ADS automáticos + carga + transformações + inventário |
-| [2] Apenas BDS | `npm run bds` | Só baixa os BDS automáticos |
+| [1] BDS completo + ADS | `npm run pipeline` | Arquiva `csvs/` em `csvs/_anterior/` + BDS + ADS automáticos + inventário |
+| [2] Apenas BDS completo | `npm run bds` | Só baixa os BDS automáticos |
 | [3] Apenas ADS | `npm run ads` | Só baixa os ADS marcados como automáticos |
-| [4] Apenas carga MySQL | `npm run load` | Carrega os CSVs já baixados no MySQL |
-| [5] Apenas transformações | `npm run transform` | Executa as queries SQL configuradas |
-| [6] Pipeline com BDS diferencial | `npm run pipeline -- --diferencial` | Como [1], mas baixa o BDS diferencial do dia |
-| [7] Apenas BDS diferencial | `npm run bds:diferencial` | Só baixa o diferencial do dia (aplicado no próximo `npm run load`) |
+| [4] BDS diferencial + ADS | `npm run pipeline -- --diferencial` | Como [1], mas baixa o BDS diferencial do dia |
+| [5] Apenas BDS diferencial | `npm run bds:diferencial` | Só baixa o diferencial do dia |
 
-As etapas executadas no pipeline completo seguem `pipeline` em `config/schedule.json`. Com `"exportar_csvs": false`, as transformações do tipo `exportar_csv` são puladas (`⏭️  pulada (exportar_csvs = false)`), enquanto `view` e `table` continuam rodando; o resumo final mostra quantas foram puladas. Ao final das transformações, o pipeline lista as views atualizadas para o PowerBI.
+O que é baixado na execução completa também segue `pipeline.baixar_bds` / `pipeline.baixar_ads` em `config/schedule.json`.
 
-**`csvs/_anterior/`:** no pipeline completo (`npm run pipeline`, opção [1] e o agendamento), o conteúdo atual de `csvs/` é movido para `csvs/_anterior/` **antes** dos downloads — nada é apagado, mas só a última execução fica guardada (o `_anterior` antigo é substituído). Assim, um CSV baixado sob demanda semanas atrás não é recarregado toda noite. O loader e o inventário ignoram `csvs/_anterior/` e `csvs/zips/`; os diferenciais em `csvs/diferencial/` são aplicados pelo loader como upsert. Execuções parciais (`--apenas-*`) e downloads sob demanda pela CLI **não** mexem na pasta. No fim, o resumo lista as tabelas do MySQL que **não** foram atualizadas nesta execução (o CSV delas não foi baixado).
+**`csvs/_anterior/`:** no pipeline completo (`npm run pipeline`, opção [1] e o agendamento), o conteúdo atual de `csvs/` é movido para `csvs/_anterior/` **antes** dos downloads — nada é apagado, mas só a última execução fica guardada (o `_anterior` antigo é substituído). Assim, `csvs/` fica só com o que foi baixado na execução — um CSV baixado sob demanda semanas atrás não se mistura com os de hoje. O inventário ignora `csvs/_anterior/` e `csvs/zips/`. Execuções parciais (`--apenas-*`) e downloads sob demanda pela CLI **não** mexem na pasta. No fim, o resumo lista os downloads que falharam mesmo após a nova tentativa.
 
 ---
 
-### [6] Download sob demanda
+### [5] Download sob demanda
 
 Baixa dados específicos sem alterar as configurações de automação:
 
@@ -214,7 +174,7 @@ Baixa dados específicos sem alterar as configurações de automação:
 
 ---
 
-### [7] Ver último log
+### [6] Ver último log
 
 Exibe as últimas 50 linhas do log mais recente em `logs/`. Útil para verificar erros após uma execução.
 
@@ -227,21 +187,15 @@ Se existir `logs/ULTIMA_FALHA_AUTH.txt`, mostra antes um alerta destacado de que
 ```bash
 npm run setup       # Configurar autenticação OAuth (primeiro uso)
 npm run cli         # Abrir CLI interativa
-npm run pipeline    # Rodar pipeline completo agora
+npm run pipeline    # Baixar agora BDS completo + ADS automáticos
 npm run bds         # Baixar apenas BDS (completo)
 npm run bds:diferencial   # Baixar apenas o BDS diferencial do dia
 npm run ads         # Baixar apenas ADS
 npm run ads -- --inicio 2026-08-01   # ADS com outro startDate (só nesta execução)
-npm run load        # Carregar CSVs no MySQL
-npm run transform   # Executar transformações SQL
-npm run transform -- --so vw_x   # Só a transformação vw_x (sem autenticar/baixar/carregar)
 npm run start       # Iniciar com agendamento automático (modo watch)
 npm run roles       # Listar IDs das roles disponíveis no Brightspace
 npm run test-auth   # Testar se a autenticação está funcionando
-npm test            # Rodar os testes unitários (node:test, sem MySQL/Brightspace)
-npm run db:up       # Subir o MySQL (Docker)
-npm run db:down     # Parar o MySQL (Docker)
-npm run db:logs     # Log do MySQL (Docker)
+npm test            # Rodar os testes unitários (node:test, sem acessar o Brightspace)
 npm run ads:filtros # Filtros que cada ADS aceita vs. config/ads-filters.json
 npm run ads:periodo -- --inicio 2026-08-01   # Grava novo startDate em todos os ADS
 npm run inventario  # Gerar exports/_inventario_csvs.md
@@ -256,10 +210,7 @@ npm run inventario  # Gerar exports/_inventario_csvs.md
 | `.env` | Credenciais (nunca commitar) |
 | `config/ads-filters.json` | Filtros e configurações dos relatórios ADS |
 | `config/bds-selecao.json` | Lista de BDS para download automático |
-| `config/bds-diferencial.json` | Chave de cada BDS para aplicar o diferencial (upsert) |
-| `config/schemas.json` | Schemas fixos das tabelas (tipos, nome da tabela, `aliases`) |
-| `config/schedule.json` | Agendamentos (cron + BDS completo/diferencial + ADS) e etapas do pipeline |
-| `config/transforms.json` | Transformações SQL a executar |
+| `config/schedule.json` | Agendamentos (cron + BDS completo/diferencial + ADS) e chave geral de BDS/ADS |
 
 ### Datas relativas nos filtros ADS
 
@@ -308,7 +259,7 @@ npm run ads:periodo -- --inicio -30d --so "Uso do Aluno,Notas finais"   # só es
 
 Só altera os relatórios que já têm a chave. Valor inválido, nome de relatório inexistente ou início
 depois do fim → erro e **nada é gravado**. A gravação é atômica (arquivo temporário + rename).
-Não precisa de autenticação nem de MySQL.
+Não precisa de autenticação.
 
 #### Trocar o período só em uma execução (`--inicio` / `--fim`)
 
@@ -319,36 +270,12 @@ vale apenas para aquela execução — `config/ads-filters.json` não é alterad
 ```bash
 npm run ads -- --inicio 2026-08-01                 # todos os ADS a partir de 01/08
 npm run ads -- --inicio -30d --fim hoje            # últimos 30 dias
-npm run pipeline -- --inicio=inicio_semestre       # pipeline completo com outro início
+npm run pipeline -- --inicio=inicio_semestre       # execução completa com outro início
 ```
 
 Aceita os mesmos valores da tabela acima, além de `YYYY-MM-DD` (início do dia em `--inicio`, fim do
 dia em `--fim`). Valor inválido ou início depois do fim → erro antes de autenticar. Não combina com
-`--watch`. Na CLI ([5] → [1] ou [3]) há a pergunta "Data de início dos ADS".
-
-### Schemas fixos e aliases
-
-O loader procura em `config/schemas.json` um schema para cada CSV pelo nome do arquivo (sem `.csv`). A comparação ignora acentos, maiúsculas/minúsculas, espaços, `_` e `-`, e também considera o campo opcional `aliases`:
-
-```json
-"Users": {
-  "tabela": "users",
-  "aliases": ["Usuários"],
-  "colunas": { "UserId": "INT", "UserName": "VARCHAR(255)" }
-}
-```
-
-Para corrigir um CSV que deveria ter schema, veja o nome real do arquivo em `csvs/` (ou no inventário) e adicione-o em `aliases` da entrada correspondente. Entradas sem `aliases` continuam funcionando como antes.
-
-### CSVs sem schema fixo: todas as colunas `TEXT`
-
-Quando um CSV não casa com nenhum schema, a tabela é criada com **todas as colunas `TEXT`**, e o log destaca:
-
-```
-🔍 Sem schema fixo para "<arquivo>" → tabela "<tabela>" carregada com todas as colunas TEXT
-```
-
-É o padrão seguro para dados ainda desconhecidos: a inferência pelo nome da coluna pode truncar dados sem erro (ex.: `ID definido da organização` contém texto, mas viraria `INT`). Para voltar à inferência, defina `INFERIR_TIPOS=true` no `.env`. Se a tabela já existir com outra estrutura (colunas novas ou tipos antigos), ela é recriada (`♻️` no log); com a mesma estrutura, só é truncada. Tabelas com schema fixo não mudam. Use `CAST`/`STR_TO_DATE` nas queries, ou crie um schema em `config/schemas.json` depois de inspecionar o inventário.
+`--watch`. Na CLI ([4] → [1], [3] ou [4]) há a pergunta "Data de início dos ADS".
 
 ### Nome do CSV dos ADS (`arquivo_csv`)
 
@@ -380,7 +307,7 @@ Para cada relatório mostra os filtros declarados (nome, tipo, descrição, valo
 
 ### Inventário dos CSVs (`npm run inventario`)
 
-Gera `exports/_inventario_csvs.md` com, para cada CSV de `csvs/` (sem `_anterior/` e `zips/`): tamanho, número de registros (lido em stream), tabela MySQL de destino, se tem schema fixo ou será `TEXT`, origem (BDS/ADS, pelo nome configurado), colunas na ordem do cabeçalho, o formato das colunas de data/hora (com um exemplo) e se as colunas de ID são todas numéricas. Roda automaticamente no fim do pipeline completo.
+Gera `exports/_inventario_csvs.md` com, para cada CSV de `csvs/` (sem `_anterior/` e `zips/`): tamanho, número de registros (lido em stream), origem (ADS pelo nome configurado; BDS pelo dataset registrado em `csvs/_bds_extracts.json`), colunas na ordem do cabeçalho, o formato das colunas de data/hora (com um exemplo) e se as colunas de ID são todas numéricas. Roda automaticamente no fim do pipeline completo.
 
 > **Privacidade:** só as colunas de data/hora mostram um exemplo de valor (formato não reconhecido vira máscara, ex.: `99/99/9999`). Nenhum outro valor — nome, e-mail, matrícula — entra no inventário. As detecções usam as 1.000 primeiras linhas.
 
@@ -389,10 +316,11 @@ Gera `exports/_inventario_csvs.md` com, para cada CSV de `csvs/` (sem `_anterior
 ## Estrutura de pastas geradas em runtime
 
 ```
-csvs/            ← CSVs da execução atual (os únicos carregados no MySQL)
-csvs/_anterior/  ← CSVs da execução anterior (substituído a cada pipeline completo)
-csvs/zips/       ← temporário dos downloads
-exports/         ← CSVs exportados após transformação e _inventario_csvs.md
+csvs/              ← CSVs da execução atual (BDS completo + ADS) e _bds_extracts.json
+csvs/diferencial/  ← BDS diferencial do dia e _bds_extracts.json
+csvs/_anterior/    ← CSVs da execução anterior (substituído a cada execução completa)
+csvs/zips/         ← temporário dos downloads
+exports/           ← _inventario_csvs.md
 logs/       ← Logs de cada execução (pipeline-YYYY-MM-DD.log)
               e ULTIMA_FALHA_AUTH.txt quando a autenticação falhar
 ```
@@ -409,13 +337,12 @@ BRIGHTSPACE_CLIENT_SECRET=seu_client_secret
 BRIGHTSPACE_REDIRECT_URI=https://localhost:9876/callback
 BRIGHTSPACE_SCOPES=datahub:dataExports:download datahub:dataExports:read datasets:bds:read core:*:*
 
-# MySQL
-DB_HOST=127.0.0.1
-DB_PORT=3307
-DB_USER=dataUCB
-DB_PASSWORD=sua_senha
-DB_NAME=data_ucb
+# Pastas
+CSVS_DIR=./csvs
+EXPORTS_DIR=./exports
+LOGS_DIR=./logs
 
-# Tabelas sem schema fixo: false (padrão) = todas TEXT; true = infere tipos pelo nome da coluna
-INFERIR_TIPOS=false
+# Downloads BDS/ADS: total de tentativas (1 = sem nova tentativa) e espera entre elas
+DOWNLOAD_TENTATIVAS=2
+DOWNLOAD_ESPERA_SEGUNDOS=30
 ```

@@ -1,7 +1,7 @@
 {
   "name": "brightspace-etl-ucb",
   "version": "1.0.0",
-  "description": "Automação ETL para dados do Brightspace (D2L) — UCB",
+  "description": "Automação do download dos dados do Brightspace (D2L) — BDS e ADS — UCB",
   "main": "src/pipeline.js",
   "scripts": {
     "setup": "node src/auth/oauth.js --setup",
@@ -10,28 +10,23 @@
     "bds": "node src/pipeline.js --apenas-bds",
     "bds:diferencial": "node src/pipeline.js --apenas-bds --diferencial",
     "ads": "node src/pipeline.js --apenas-ads",
-    "load": "node src/pipeline.js --apenas-load",
-    "transform": "node src/pipeline.js --apenas-transform",
     "cli": "node src/cli.js",
     "roles": "node src/utils/listar-roles.js",
     "test-auth": "node src/auth/oauth.js --test",
     "test": "node --test",
-    "db:up": "docker compose up -d --wait",
-    "db:down": "docker compose stop",
-    "db:logs": "docker compose logs -f mysql",
     "ads:filtros": "node src/utils/ads-filtros.js",
     "ads:periodo": "node src/utils/ads-periodo.js",
     "inventario": "node src/utils/inventario.js"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
     "brightspace-auth": "github:vhparaujo/Authorization-Service-UCB",
-    "csv-stringify": "^6.5.1",
     "dotenv": "^16.4.5",
-    "mysql2": "^3.11.0",
     "node-cron": "^3.0.3"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "adm-zip": "^0.5.16"
   }
 }

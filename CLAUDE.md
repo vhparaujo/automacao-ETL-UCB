@@ -1,12 +1,16 @@
-# CLAUDE.md — Brightspace ETL Automation
+# CLAUDE.md — Brightspace Downloads (BDS/ADS)
 
 ## Visão Geral do Projeto
 
-Sistema de automação para download, carga, transformação e exportação dos dados do
-Brightspace (D2L) da Universidade Católica de Brasília (UCB). Substitui o processo
-manual de: baixar CSVs pelo AVA → rodar SQL → atualizar PowerBI.
+Sistema de automação para **download** dos dados do Brightspace (D2L) da Universidade
+Católica de Brasília (UCB): BDS (completo + diferencial) e ADS, com agendamento por cron.
+Substitui o processo manual de baixar os CSVs pelo AVA.
 
-**Stack:** Node.js (sem frameworks pesados) + MySQL + node-cron  
+> **Escopo (reduzido em 16/11/2026):** só o download dos CSVs. Carga no MySQL, transformações SQL,
+> exportação e views do PowerBI foram **removidas** (loader, engine, exporter, queries, schemas,
+> docker-compose). Não reintroduzir sem pedido explícito — quem consome os CSVs fica fora deste projeto.
+
+**Stack:** Node.js (sem frameworks pesados) + node-cron  
 **Runtime mínimo:** Node.js 18+  
 **Linguagem do projeto:** Português (comentários, logs, mensagens para o usuário)
 
@@ -21,17 +25,14 @@ manual de: baixar CSVs pelo AVA → rodar SQL → atualizar PowerBI.
 automacao-ETL-UCB/
 ├── CLAUDE.md                    ← este arquivo
 ├── README.md
-├── GUIA_ANALISTA.md             ← como criar queries/views (para analistas de dados)
 ├── package.json
 ├── .env                         ← credenciais (nunca commitar)
 ├── .env.example                 ← template público
 ├── .gitignore
-├── docker-compose.yml           ← MySQL 8.4 (container etl-ucb-mysql, 127.0.0.1:3307, local_infile=ON)
-├── load datas.sql               ← SQL legado de referência (migrado para queries/)
 │
 ├── src/
 │   ├── cli.js                   ← menu interativo (npm run cli)
-│   ├── pipeline.js              ← orquestra autenticação → BDS → ADS → carga → transformações
+│   ├── pipeline.js              ← orquestra autenticação → arquiva csvs/ → BDS → ADS → inventário; --watch = cron
 │   │
 │   ├── auth/
 │   │   └── oauth.js             ← wrapper fino sobre o pacote brightspace-auth
@@ -40,25 +41,14 @@ automacao-ETL-UCB/
 │   │   ├── bds.js               ← download dos BDS (Brightspace Data Sets)
 │   │   └── ads.js               ← download dos ADS (Advanced Data Sets sob demanda)
 │   │
-│   ├── loader/
-│   │   └── mysql-loader.js      ← LOAD DATA LOCAL INFILE para cada CSV no MySQL
-│   │
-│   ├── transforms/
-│   │   ├── engine.js            ← executa as transformações de config/transforms.json
-│   │   └── queries/             ← arquivos .sql (export_users.sql, export_notas_finais.sql, …)
-│   │
-│   ├── exporter/
-│   │   ├── csv-exporter.js      ← exporta resultado de query para CSV (streaming)
-│   │   └── powerbi.js           ← notificarViews(): loga as views atualizadas para o PowerBI
-│   │
 │   └── utils/
 │       ├── versao-api.js        ← descobre a versão LP via /d2l/api/versions/ (ou LP_API_VERSION)
 │       ├── listar-roles.js      ← lista IDs de roles (npm run roles)
-│       ├── csv.js               ← parseLinhaCSV() RFC 4180 + nomes de coluna únicos (≤ 64 chars)
-│       ├── nomes.js             ← normalização de nomes (acentos/caixa/espaço/_/-) + encontrarSchema()
+│       ├── csv.js               ← parseLinhaCSV() / criarParserCSV() RFC 4180 (usados pelo inventário)
+│       ├── nomes.js             ← normalização de nomes (acentos/caixa/espaço/_/-) + sugestões de nomes
 │       ├── datas.js             ← datas relativas dos filtros ADS ("hoje", "-180d", "inicio_semestre"…)
 │       ├── bds-extracts.js      ← escolhe o extract BDS mais recente por CreatedDate
-│       ├── bds-diferencial.js   ← BDS diferencial: seleção, pastas, manifesto, decisão e SQL do upsert
+│       ├── bds-diferencial.js   ← BDS diferencial: seleção do extract do dia, pastas e manifesto (_bds_extracts.json)
 │       ├── agendamentos.js      ← lerAgendamentos() de schedule.json (vários crons; formato antigo aceito)
 │       ├── falha-auth.js        ← detecta refresh token inválido e grava logs/ULTIMA_FALHA_AUTH.txt
 │       ├── retentativa.js       ← comRetentativa(): nova tentativa de download (BDS e ADS)
@@ -72,16 +62,13 @@ automacao-ETL-UCB/
 ├── config/
 │   ├── ads-filters.json         ← filtros dos ADS (editável)
 │   ├── bds-selecao.json         ← quais BDS baixar no modo automático (editável)
-│   ├── bds-diferencial.json     ← chave de cada BDS para aplicar o diferencial (upsert)
-│   ├── schemas.json             ← schemas fixos de tabelas (tipos, nome da tabela, aliases)
-│   ├── schedule.json            ← agendamentos (cron + BDS completo/diferencial + ADS) + etapas
-│   ├── transforms.json          ← quais queries rodar e o que exportar (editável)
+│   ├── schedule.json            ← agendamentos (cron + BDS completo/diferencial + ADS) + chave geral
 │   └── roles.txt                ← referência de IDs de roles
 │
 ├── test/                        ← testes unitários (node:test) — npm test
 │
 ├── csvs/                        ← CSVs baixados (gerado em runtime, ignorar no git)
-├── exports/                     ← CSVs exportados tratados (gerado em runtime)
+├── exports/                     ← _inventario_csvs.md (gerado em runtime)
 └── logs/                        ← logs de execução (gerado em runtime)
 ```
 
@@ -207,10 +194,9 @@ GET extract.DownloadLink
 # ("ainda não foi gerado" / "já está no completo"). CSVs direto em csvs/diferencial/ (sobrescrevem os do
 # dia anterior, como no completo) + registro em csvs/diferencial/_bds_extracts.json
 # { "Users.csv": { dataset, tipo, criado, base (data do Full), anterior (diferencial anterior na API) } }.
-# O loader usa "anterior" para avisar quando o diferencial de um dia não foi aplicado (lacuna até o
-# próximo completo).
+# "anterior" permite a quem consome os CSVs detectar um dia perdido (lacuna até o próximo completo).
 # Completo: grava csvs/_bds_extracts.json { "Users.csv": { dataset, tipo: "Full", criado } } —
-# o loader usa para registrar a base de cada tabela.
+# o inventário usa o "dataset" para identificar a origem de cada CSV.
 ```
 
 > Os endpoints antigos `/dataExport/bds/list`, `/dataExport/bds/(pluginId)`,
@@ -291,7 +277,7 @@ as iniciadas por `_`, viram `Filters` (`montarFiltros()`; arrays são unidos por
 declara filtros próprios em `DataSetData.Filters` (`Name`, `Type` 1–5, `Description`,
 `DefaultValue`) — confira com `npm run ads:filtros`. O CSV é salvo como `nomeArquivoADS()`:
 `arquivo_csv` ou `slug(nome)`; os nomes `notas_finais`, `uso_do_aluno` e `uso_do_instrutor` não
-podem mudar (schemas.json e queries dependem deles).
+podem mudar (os consumidores dos CSVs dependem deles; há teste em `test/ads-config.test.js`).
 
 ### Arquivo de configuração: config/ads-filters.json
 
@@ -348,158 +334,7 @@ strings como "Professor" com erro 400.
 
 ---
 
-## Fase 4 — Carga no MySQL
-
-### src/loader/mysql-loader.js
-
-```javascript
-// Para cada CSV em csvs/:
-// 1. Lê o cabeçalho com parseLinhaCSV() (src/utils/csv.js) — RFC 4180: vírgulas entre aspas,
-//    "" como aspa literal, remove BOM e \r final.
-// 2. Procura schema fixo em config/schemas.json com encontrarSchema() (src/utils/nomes.js):
-//    chave exata → chave normalizada → "aliases" normalizados.
-//    a. Com schema: DROP + CREATE TABLE com as colunas/tipos do schema (colunas extras do CSV
-//       são ignoradas); nome da tabela = "tabela" do schema.
-//    b. Sem schema: TODAS as colunas TEXT (tipoColuna() só com INFERIR_TIPOS=true), log
-//       "🔍 Sem schema fixo para … carregada com todas as colunas TEXT"; trunca nomes para
-//       64 chars e desambigua colisões com _2, _3…; se a tabela existe com outra estrutura,
-//       DROP + CREATE; com a mesma estrutura, só TRUNCATE.
-//    Só lê os .csv do nível de cima de csvs/ (ignora csvs/_anterior/ e csvs/zips/).
-// 3. LOAD DATA LOCAL INFILE com variáveis posicionais (@col_0, @col_1, …) e
-//    SET coluna = NULLIF(@col_N, '') — booleanos: CASE TRUE/FALSE → 1/0 (expressaoValor()).
-// 4. Log: tabela, linhas, tempo (📋 = schema fixo, 🔍 = inferido).
-//
-// Conexão mysql2 usa infileStreamFactory (habilita LOCAL INFILE no cliente).
-// Servidor precisa de local_infile=ON: SET GLOBAL local_infile = 1;
-// Conexão via .env: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
-```
-
-### config/schemas.json
-
-```json
-"Users": {
-  "tabela": "users",
-  "aliases": ["Usuários"],
-  "colunas": { "UserId": "INT", "UserName": "VARCHAR(255)" }
-}
-```
-
-- Chave = nome do CSV sem extensão. `aliases` (opcional) = outros nomes possíveis do arquivo
-  (ex.: em português). Casamento ignora acentos, caixa, espaços, `_` e `-`.
-- Entradas sem `aliases` continuam funcionando como antes (casamento exato ou normalizado).
-- Para adicionar um alias: veja o nome real do CSV em `csvs/` e inclua em `aliases`.
-- Coluna: `"Nome no CSV": "TIPO"` ou `"Nome no CSV": { "tipo": "TIPO", "coluna": "nome na tabela" }`
-  (para nomes > 64 chars, ex.: colunas SCORM do `uso_do_aluno`). A tabela segue a ordem do schema.
-- `planejarColunasSchema()` casa cabeçalho × schema (exato, depois normalizado) e o loader avisa:
-  `⚠️ … coluna(s) do schema não existem no CSV (ficarão NULL)` / `ℹ️ … coluna(s) do CSV fora do schema`.
-  Os schemas devem bater 1:1 com os cabeçalhos reais (conferidos em 05/11/2026).
-- `"indices": [["UserId"], ["OrgUnitId", "RoleId"]]` (opcional): `montarSqlIndices()` cria um único
-  `ALTER TABLE … ADD INDEX …` DEPOIS do LOAD DATA (não UNIQUE; TEXT com prefixo 191; coluna inexistente →
-  aviso e índice ignorado). Depois de cada carga roda `ANALYZE TABLE` (todas as tabelas) — sem isso o
-  otimizador estimava errado e escolhia `hash join (no condition)` (consulta de 600 s+ → 2 s com índices).
-- Booleanos (`TINYINT(1)`/`BOOL`): `expressaoValor()` converte `TRUE`/`FALSE` (qualquer caixa) → 1/0 —
-  o MySQL (sql_mode='') gravava 0 para o texto. Vale também para tipos inferidos (INFERIR_TIPOS=true).
-- `Version` do Brightspace é `BIGINT` (passa de 2.147.483.647).
-
-### BDS diferencial — `aplicarDiferenciais()` (depois dos CSVs do nível de cima)
-
-```javascript
-// Para cada CSV de csvs/diferencial/ (ordem cronológica do "criado" em diferencial/_bds_extracts.json):
-// 1. planejarCarga() (mesma do completo) → tabela/colunas; a tabela precisa existir com a mesma
-//    estrutura (senão erro: "rode o BDS completo").
-// 2. Chave em config/bds-diferencial.json (encontrarChave(), casamento normalizado). Sem chave → erro.
-// 3. decidirAplicacao() com _etl_bds_estado (tabela, completo_criado, diferencial_criado):
-//    pula já aplicados e anteriores ao completo carregado; avisa se o completo da tabela é mais
-//    antigo que o "base" do diferencial, se o "anterior" não foi aplicado (lacuna) ou se não há
-//    registro de completo.
-// 4. Índices do schema que faltam na tabela são criados (custo único; sem eles o DELETE…JOIN em
-//    systemaccesslog levava 10 min+). Índices compostos casados com a chave: (UserId, Timestamp)
-//    nos logs, (UserId, OrgUnitId) em userenrollments, (UserId, GradeObjectId) em graderesults.
-// 5. CREATE TABLE _dif_<tabela> LIKE <tabela> → LOAD DATA → índice da chave no staging →
-//    transação: DELETE t JOIN staging ON chave (<=>) + INSERT … SELECT + estado → ANALYZE → DROP staging.
-// O completo (CSV listado em csvs/_bds_extracts.json) grava completo_criado e zera diferencial_criado.
-// tabelasNaoAtualizadas() ignora tabelas que começam com "_" (_etl_bds_estado, _dif_*).
-```
-
-- Diferencial não traz exclusões físicas (ex.: desinscrição) — o completo semanal corrige.
-
----
-
-## Fase 5 — Transformação (Engine SQL)
-
-### Conceito
-
-As transformações são arquivos `.sql` na pasta `src/transforms/queries/`.
-O `engine.js` executa esses arquivos em ordem e os resultados ficam disponíveis
-como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome hoje.
-
-### Arquivo de configuração: config/transforms.json
-
-```json
-{
-  "_instrucoes": "Configure as transformações. Cada item é uma query SQL a executar após a carga.",
-  "transformacoes": [
-    {
-      "nome": "view_alunos_ativos",
-      "arquivo": "src/transforms/queries/alunos_ativos.sql",
-      "ativo": true,
-      "tipo": "view",
-      "descricao": "View com alunos ativos por curso no semestre atual"
-    },
-    {
-      "nome": "relatorio_notas",
-      "arquivo": "src/transforms/queries/notas_por_curso.sql",
-      "ativo": true,
-      "tipo": "exportar_csv",
-      "arquivo_saida": "exports/notas_por_curso.csv",
-      "descricao": "Exporta notas consolidadas por curso"
-    }
-  ]
-}
-```
-
-### Implementação do src/transforms/engine.js
-
-```javascript
-// run({ exportarCsvs }) → { executadas, erros, puladas, views }
-// 1. Lê config/transforms.json
-// 2. Para cada transformação ativa, em ordem:
-//    a. "view":         executa o .sql (CREATE OR REPLACE VIEW …) e registra o nome em views
-//    b. "exportar_csv": executa a query e grava CSV via csv-exporter.js
-//                       — PULADA quando exportarCsvs = false ("⏭️  pulada (exportar_csvs = false)")
-//    c. "table":        executa o .sql (CREATE TABLE … AS SELECT …)
-// 3. exportarCsvs omitido → lê pipeline.exportar_csvs de config/schedule.json (padrão true)
-//
-// opcoes.somente (npm run transform -- --so nome[,nome]): roda só as nomeadas, na ordem do config,
-//    mesmo com ativo=false; exportar_csv sempre roda; nome inexistente → erro com sugestões.
-//    No pipeline, --so pula autenticação/download/carga (lerArgsSomente() em engine.js).
-//
-// O usuário adiciona .sql sem mexer no código: cria o arquivo e registra em config/transforms.json.
-// Guia para analistas: GUIA_ANALISTA.md (manter atualizado ao mudar loader/engine/schemas).
-```
-
----
-
-## Fase 6 — Exportação
-
-### src/exporter/csv-exporter.js
-
-```javascript
-// exportarQuery(): executa a query via streaming (mysql2 raw) e grava CSV com cabeçalho
-// (csv-stringify). Chamado pelo engine nas transformações "exportar_csv".
-// exportarTodos(): usado apenas ao rodar o arquivo diretamente (node src/exporter/csv-exporter.js).
-```
-
-### src/exporter/powerbi.js
-
-```javascript
-// notificarViews(views): chamado pelo pipeline após as transformações, com os nomes das
-// views atualizadas com sucesso. Loga: "✅ View 'x' atualizada — PowerBI pode sincronizar"
-```
-
----
-
-## Fase 7 — Orquestração e Agendamento
+## Fase 4 — Orquestração e Agendamento
 
 ### Arquivo de configuração: config/schedule.json
 
@@ -510,10 +345,7 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
     { "nome": "BDS diferencial + ADS", "ativo": true, "cron": "0 6 * * *", "bds": "diferencial", "ads": true },
     { "nome": "BDS completo",          "ativo": true, "cron": "0 9 * * 1", "bds": "completo",    "ads": false }
   ],
-  "pipeline": {
-    "baixar_bds": true, "baixar_ads": true, "carregar_mysql": true,
-    "executar_transformacoes": true, "exportar_csvs": true
-  }
+  "pipeline": { "baixar_bds": true, "baixar_ads": true }
 }
 ```
 
@@ -528,7 +360,9 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 ### src/pipeline.js
 
 ```javascript
-// Orquestra em sequência (cada etapa respeita as flags de config/schedule.json → pipeline):
+// Orquestra os downloads (baixar_bds / baixar_ads de config/schedule.json → pipeline são a chave geral).
+// Continua necessário mesmo sem carga/transformações: é o ponto único que valida a autenticação
+// (alerta ULTIMA_FALHA_AUTH), arquiva csvs/, grava o log do dia, faz o resumo das falhas e roda o cron.
 // 1. getAccessToken()          → valida/renova autenticação
 //    • Refresh token inválido/expirado (erros do brightspace-auth, invalid_grant, HTTP 400/401):
 //      loga "🔐 Refresh token inválido ou expirado — rode "npm run setup" para reautenticar",
@@ -538,21 +372,15 @@ como views ou tabelas no MySQL — que é exatamente o que o PowerBI já consome
 // 2. bds.download({ tipo })    → baixar_bds; tipo = opcoes.bdsTipo ('completo' | 'diferencial')
 //                                (avisa nomes do bds-selecao.json ausentes na API, com sugestões)
 // 3. ads.download()            → baixar_ads
-// 4. load()                    → carregar_mysql (CSVs de csvs/ + diferenciais de csvs/diferencial/)
-// 5. engine.run({ exportarCsvs }) → executar_transformacoes (+ exportar_csvs)
-// 6. notificarViews(views)     → loga views prontas para o PowerBI
-//    + lista tabelas do MySQL não atualizadas nesta execução; inventário (só pipeline completo)
-// 7. Resumo: duração, datasets, tabelas, transformações executadas/puladas, erros
+// 4. gerarInventario()        → exports/_inventario_csvs.md (só pipeline completo)
+// 5. Resumo: duração, datasets BDS, relatórios ADS, downloads que falharam, erros
 //
 // Execução manual:
-// node src/pipeline.js                    → roda tudo agora
+// node src/pipeline.js                    → BDS completo + ADS agora
 // node src/pipeline.js --apenas-bds       → só baixa BDS (completo)
 // node src/pipeline.js --diferencial      → pipeline com o BDS diferencial do dia (também com --apenas-bds)
 // node src/pipeline.js --apenas-ads       → só baixa ADS
 // node src/pipeline.js --apenas-ads --inicio 2026-08-01 [--fim hoje] → ADS com outro período (só nesta execução)
-// node src/pipeline.js --apenas-load      → só carrega no MySQL
-// node src/pipeline.js --apenas-transform → só transforma
-// node src/pipeline.js --apenas-transform --so vw_x → só a transformação vw_x, sem autenticar
 // node src/pipeline.js --watch            → agendamento com node-cron (npm start)
 ```
 
@@ -568,16 +396,10 @@ BRIGHTSPACE_CLIENT_SECRET=seu_client_secret_aqui
 BRIGHTSPACE_REDIRECT_URI=https://localhost:9876/callback
 BRIGHTSPACE_SCOPES=datahub:dataExports:download datahub:dataExports:read datasets:bds:read core:*:*
 
-# MySQL
-DB_HOST=127.0.0.1
-DB_PORT=3307
-DB_USER=dataUCB
-DB_PASSWORD=sua_senha_aqui
-DB_NAME=data_ucb
-
 # Configurações do pipeline
 LOG_LEVEL=info
 CSVS_DIR=./csvs
+# Inventário dos CSVs (exports/_inventario_csvs.md)
 EXPORTS_DIR=./exports
 LOGS_DIR=./logs
 # Downloads BDS/ADS: total de tentativas (1 = sem nova tentativa) e espera entre elas
@@ -593,10 +415,10 @@ DOWNLOAD_ESPERA_SEGUNDOS=30
 {
   "dependencies": {
     "brightspace-auth": "github:vhparaujo/Authorization-Service-UCB",
-    "mysql2": "^3.x",
     "node-cron": "^3.x",
-    "dotenv": "^16.x",
-    "csv-stringify": "^6.x",
+    "dotenv": "^16.x"
+  },
+  "devDependencies": {
     "adm-zip": "^0.5.x"        ← só nos testes (criar ZIPs); a extração usa src/utils/zip.js
   }
 }
@@ -604,62 +426,6 @@ DOWNLOAD_ESPERA_SEGUNDOS=30
 
 > `selfsigned` deixou de ser dependência direta — agora é dependência interna do
 > pacote `brightspace-auth`, que cuida de todo o fluxo OAuth.
-
----
-
-## Sequência de Implementação
-
-Implementar **nesta ordem exata**, testando cada fase antes de avançar:
-
-### Etapa 1 — Scaffolding
-- [ ] Criar estrutura de pastas completa
-- [ ] Criar `package.json` com scripts: `setup`, `start`, `pipeline`, `dev`
-- [ ] Criar `.env.example` e `.gitignore`
-- [ ] Criar `config/schedule.json`, `config/ads-filters.json`, `config/transforms.json` com exemplos
-
-### Etapa 2 — Autenticação (pacote `brightspace-auth`)
-- [ ] `src/auth/oauth.js` é um wrapper sobre `BrightspaceAuth` (não reimplementar OAuth)
-- [ ] Testar: `node src/auth/oauth.js --setup` abre o browser e salva tokens
-- [ ] Testar: `node src/auth/oauth.js --test` retorna `{ ok: true, user: '...' }`
-
-### Etapa 3 — BDS
-- [ ] Implementar `src/extractors/bds.js`
-- [ ] Testar: listar todos os 137 datasets e logar nomes
-- [ ] Testar: baixar apenas o primeiro dataset com stream + progresso
-- [ ] Testar: baixar todos os datasets
-
-### Etapa 4 — ADS
-- [ ] Implementar `src/extractors/ads.js`
-- [ ] Testar: criar job para "Uso do instrutor" com filtros do ads-filters.json
-- [ ] Testar: polling de status e download quando concluído
-
-### Etapa 5 — Carga MySQL
-- [ ] Implementar `src/loader/mysql-loader.js`
-- [ ] Testar: `LOAD DATA LOCAL INFILE` de um CSV pequeno
-- [ ] Testar: carregar todos os CSVs em batch
-
-### Etapa 6 — Transformações
-- [ ] Implementar `src/transforms/engine.js`
-- [ ] Usar as queries de `src/transforms/queries/` (migradas de `load datas.sql`) como modelo
-- [ ] Testar: executar uma query de exemplo e verificar resultado
-
-### Etapa 7 — Exportação
-- [ ] Implementar `src/exporter/csv-exporter.js`
-- [ ] Testar: gerar CSV de uma query simples em `exports/`
-
-### Etapa 8 — Pipeline completo
-- [ ] Implementar `src/pipeline.js`
-- [ ] Testar pipeline completo de ponta a ponta
-- [ ] Implementar agendamento com `node-cron` lendo `config/schedule.json`
-
-### Etapa 9 — CLI interativa (UX)
-- [ ] Implementar `src/cli.js` com menu interativo para:
-  - Configurar autenticação (setup OAuth)
-  - Editar `ads-filters.json` (adicionar/remover relatórios ADS, definir filtros)
-  - Editar `schedule.json` (alterar frequência do agendamento)
-  - Editar `transforms.json` (gerenciar transformações)
-  - Rodar pipeline agora manualmente
-  - Ver logs da última execução
 
 ---
 
@@ -681,15 +447,6 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 - **Downloads grandes (>100MB):** sempre usar `stream.pipeline()` do Node.js nativo.
   Nunca `response.arrayBuffer()` ou `response.buffer()`.
 
-### MySQL
-- Roda em Docker: `docker-compose.yml` → container `etl-ucb-mysql`, volume `etl-ucb-mysql-data`,
-  porta `127.0.0.1:${DB_PORT}` (3307). Credenciais do `.env`; root com senha aleatória (não usada).
-  `npm run db:up` / `db:down` / `db:logs`. O Docker Desktop precisa estar aberto no horário do cron.
-- `local_infile` já vem ON no container (`--local-infile=1`). Fora do Docker: `SET GLOBAL local_infile = 1;`
-- Na conexão mysql2: `infileStreamFactory` (habilita LOCAL INFILE no cliente)
-- `TRUNCATE TABLE` antes de cada `LOAD DATA` (dados são sempre completos do BDS)
-- Tratar valores nulos: `SET coluna = NULLIF(@coluna, '')`
-
 ### Segurança
 - **Nunca commitar `.env` ou `.tokens.json`**
 - `.gitignore` deve incluir: `.env`, `.tokens.json`, `csvs/`, `exports/`, `logs/`, `node_modules/`
@@ -698,8 +455,8 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 ### Logs
 - Cada execução do pipeline gera arquivo em `logs/pipeline-YYYY-MM-DD.log`
 - Formato: `[HH:MM:SS] [NIVEL] mensagem`
-- Ao final do pipeline: resumo com duração, datasets baixados, tabelas carregadas, erros
-- Falha de autenticação: `logs/ULTIMA_FALHA_AUTH.txt` (a CLI [7] mostra alerta enquanto existir)
+- Ao final do pipeline: resumo com duração, datasets baixados, downloads com falha, erros
+- Falha de autenticação: `logs/ULTIMA_FALHA_AUTH.txt` (a CLI [6] mostra alerta enquanto existir)
 
 ---
 
@@ -708,7 +465,7 @@ Implementar **nesta ordem exata**, testando cada fase antes de avançar:
 Todos os logs e mensagens devem ser em **português**, claros e informativos:
 
 ```
-🚀 Iniciando pipeline Brightspace ETL — 05/06/2025 03:00:00
+🚀 Iniciando download Brightspace — 05/06/2025 03:00:00
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📡 Autenticação: renovando token... ✅
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -723,18 +480,9 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   ⏳ Uso do instrutor: aguardando job... (30s) (60s) ✅ — baixando
   ...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🗄️  MySQL — Carregando dados...
-  ✅ users              — 15.234 linhas — 2.1s
-  ...
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔧 Transformações...
-  ✅ view_alunos_ativos — view atualizada
-  ✅ notas_por_curso    — exports/notas_por_curso.csv (2.341 linhas)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ Pipeline concluído em 14m 21s
    📦 137 datasets BDS | 2 relatórios ADS
-   🗄️  52 tabelas MySQL atualizadas
-   📄 3 CSVs exportados → exports/
+   📒 Inventário: exports/_inventario_csvs.md
    ⚠️  2 erros (ver logs/pipeline-2025-06-05.log)
 ```
 
@@ -750,15 +498,10 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
   "bds":       "node src/pipeline.js --apenas-bds",
   "bds:diferencial": "node src/pipeline.js --apenas-bds --diferencial",
   "ads":       "node src/pipeline.js --apenas-ads",
-  "load":      "node src/pipeline.js --apenas-load",
-  "transform": "node src/pipeline.js --apenas-transform",
   "cli":       "node src/cli.js",
   "roles":     "node src/utils/listar-roles.js",
   "test-auth": "node src/auth/oauth.js --test",
   "test":      "node --test",
-  "db:up":     "docker compose up -d --wait",
-  "db:down":   "docker compose stop",
-  "db:logs":   "docker compose logs -f mysql",
   "ads:filtros": "node src/utils/ads-filtros.js",
   "ads:periodo": "node src/utils/ads-periodo.js",
   "inventario":  "node src/utils/inventario.js"
@@ -769,10 +512,10 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
 
 - `npm test` roda `node --test`, que descobre `test/**/*.test.js` (sem dependências extras).
   Usa-se `node --test` sem argumento de diretório porque `node --test test/` quebra no Node 22+.
-- Os testes não acessam MySQL nem Brightspace: módulos externos são mockados via `require.cache`.
+- Os testes não acessam o Brightspace: módulos externos são mockados via `require.cache`.
 - Funções puras testadas: `src/utils/retentativa.js`, `src/utils/csv.js`, `nomes.js`, `datas.js` (inclui `lerArgsPeriodo`), `ads-periodo.js`, `bds-extracts.js`,
   `bds-diferencial.js`, `agendamentos.js` (inclui os crons do schedule.json real),
-  `falha-auth.js`; `engine.run()` e o tratamento de falha de auth do pipeline com mocks.
+  `falha-auth.js`, `pasta-csvs.js`, `inventario.js`, `zip.js`; o pipeline (arquivar csvs/, falha de auth) com mocks.
 
 ---
 
@@ -781,12 +524,5 @@ Todos os logs e mensagens devem ser em **português**, claros e informativos:
 - **Instituição:** Universidade Católica de Brasília (UCB)
 - **Sistema:** Brightspace (D2L) — `ava.catolica.edu.br`
 - **OrgUnitId padrão da instituição:** 6606
-- **Banco MySQL:** host 127.0.0.1, porta 3307, user `dataUCB`, banco `data_ucb`
 - **Dados:** ~135 BDS (completo semanal + diferenciais diários) + ADS sob demanda (Uso do Instrutor, Uso do Aluno, etc.)
-- **Consumidores:** PowerBI (via views MySQL) + CSVs para entrega manual
-- **Processo atual:** 100% manual — este sistema automatiza tudo
-
-O processo atual de transformação dos dados já existe em SQL (no arquivo `load datas.sql`
-do projeto TesteAPI-D2L). As queries desse arquivo devem ser migradas para
-`src/transforms/queries/` como ponto de partida. O usuário poderá editar esses
-arquivos e adicionar novos sem tocar no código Node.js.
+- **Entrega:** os CSVs em `csvs/` (e `csvs/diferencial/`); o tratamento dos dados é feito fora deste projeto

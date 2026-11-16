@@ -10,7 +10,7 @@
 //
 // Valores: os mesmos de startDate/endDate (agora, hoje, -Nd, inicio_semestre, YYYY-MM-DD, ISO…).
 // Só altera relatórios que já têm a chave (não cria startDate num ADS que não usa esse filtro).
-// Não precisa de autenticação nem de MySQL.
+// Não precisa de autenticação.
 
 const fs = require('node:fs');
 const path = require('node:path');

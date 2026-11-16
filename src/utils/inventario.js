@@ -5,7 +5,7 @@
 //   npm run inventario
 //
 // Para cada CSV de csvs/ (ignorando _anterior/ e zips/): tamanho, número de registros (via stream),
-// tabela MySQL de destino, schema fixo ou TEXT, origem (BDS/ADS), colunas na ordem do cabeçalho,
+// origem (BDS/ADS), colunas na ordem do cabeçalho,
 // formato das colunas de data/hora e se as colunas de ID são numéricas.
 //
 // PRIVACIDADE: o único valor real exibido é um exemplo das colunas de data/hora em formato
@@ -16,9 +16,10 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { criarParserCSV } = require('./csv');
-const { encontrarSchema, mesmoNome, normalizarNome } = require('./nomes');
+const { mesmoNome } = require('./nomes');
 const { nomeArquivoADS } = require('./ads-config');
 const { listarCsvs } = require('./pasta-csvs');
+const { lerManifesto } = require('./bds-diferencial');
 
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
 const EXPORTS_DIR = process.env.EXPORTS_DIR || './exports';
@@ -71,8 +72,9 @@ function lerJSON(caminho, padrao) {
   try { return JSON.parse(fs.readFileSync(caminho, 'utf8')); } catch { return padrao; }
 }
 
-// Origem pelo nome configurado: ADS (nome gerado por nomeArquivoADS) ou BDS (bds-selecao/aliases)
-function identificarOrigem(arquivo, { adsConfig = {}, bdsSelecao = {}, schemas = {} } = {}) {
+// Origem: ADS (nome gerado por nomeArquivoADS), BDS pelo manifesto do download (csvs/_bds_extracts.json
+// → dataset de cada CSV) ou, sem manifesto, pelo nome do arquivo comparado ao bds-selecao.json
+function identificarOrigem(arquivo, { adsConfig = {}, bdsSelecao = {}, manifesto = {} } = {}) {
   const nomeArq = path.basename(arquivo).toLowerCase();
   for (const [nome, cfg] of Object.entries(adsConfig)) {
     if (nome.startsWith('_') || !cfg || typeof cfg !== 'object') continue;
@@ -81,24 +83,14 @@ function identificarOrigem(arquivo, { adsConfig = {}, bdsSelecao = {}, schemas =
     } catch { /* arquivo_csv inválido: ignora */ }
   }
 
+  const registro = manifesto[path.basename(arquivo)];
+  if (registro?.dataset) return `BDS — "${registro.dataset}"`;
+
   const base = path.basename(arquivo, path.extname(arquivo));
-  const entrada = encontrarSchema(base, schemas);
-  const candidatos = [base, ...(entrada ? [entrada.chave, ...(entrada.schema.aliases || [])] : [])];
   for (const nome of bdsSelecao.automaticos || []) {
-    if (candidatos.some((c) => mesmoNome(c, nome))) return `BDS — "${nome}"`;
+    if (mesmoNome(base, nome)) return `BDS — "${nome}"`;
   }
   return 'não identificada pelo nome (não é nenhum ADS configurado → provavelmente BDS)';
-}
-
-function destinoTabela(arquivo, schemas) {
-  const base = path.basename(arquivo, '.csv');
-  const entrada = encontrarSchema(base, schemas);
-  const tabela = entrada?.schema?.tabela || base.toLowerCase().replace(/[^a-z0-9]/g, '_');
-  const inferir = String(process.env.INFERIR_TIPOS || '').trim().toLowerCase() === 'true';
-  const tipo = entrada
-    ? `schema fixo (config/schemas.json → "${entrada.chave}")`
-    : inferir ? 'sem schema → tipos inferidos (INFERIR_TIPOS=true)' : 'sem schema → todas as colunas TEXT';
-  return { tabela, tipo, schemaFixo: !!entrada };
 }
 
 // ── Análise de um CSV (stream) ────────────────────────────────────
@@ -162,7 +154,6 @@ function blocoArquivo(info) {
   l.push(`## ${info.arquivo}`, '');
   l.push(`- **Tamanho:** ${info.mb} MB`);
   l.push(`- **Registros (sem cabeçalho):** ${info.registros.toLocaleString('pt-BR')}`);
-  l.push(`- **Tabela MySQL:** \`${info.tabela}\` — ${info.tipo}`);
   l.push(`- **Origem:** ${info.origem}`);
   l.push(`- **Colunas (${info.colunas.length}):**`, '');
   info.colunas.forEach((c, i) => l.push(`  ${i + 1}. \`${c}\``));
@@ -198,11 +189,11 @@ function gerarMarkdown(infos, quando = new Date()) {
   l.push('# Inventário dos CSVs', '');
   l.push(`Gerado em ${quando.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} — ${infos.length} arquivo(s) em \`csvs/\` (sem \`_anterior/\` e \`zips/\`).`, '');
   l.push('> Privacidade: só colunas de data/hora mostram um exemplo de valor. Nenhum outro dado do CSV aparece aqui.', '');
-  l.push('| Arquivo | MB | Registros | Tabela | Schema | Origem |');
-  l.push('|---|---|---|---|---|---|');
+  l.push('| Arquivo | MB | Registros | Colunas | Origem |');
+  l.push('|---|---|---|---|---|');
   for (const i of infos) {
-    const schema = i.erro ? `❌ ${celula(i.erro)}` : i.schemaFixo ? '📋 fixo' : '🔍 TEXT';
-    l.push(`| ${celula(i.arquivo)} | ${i.mb} | ${i.erro ? '—' : i.registros.toLocaleString('pt-BR')} | \`${i.tabela}\` | ${schema} | ${celula(i.origem)} |`);
+    const registros = i.erro ? `❌ ${celula(i.erro)}` : i.registros.toLocaleString('pt-BR');
+    l.push(`| ${celula(i.arquivo)} | ${i.mb} | ${registros} | ${i.colunas.length} | ${celula(i.origem)} |`);
   }
   l.push('');
   for (const i of infos) {
@@ -215,9 +206,8 @@ function gerarMarkdown(infos, quando = new Date()) {
 // ── Execução ──────────────────────────────────────────────────────
 
 async function gerarInventario({ csvsDir = CSVS_DIR, exportsDir = EXPORTS_DIR } = {}) {
-  const schemas = lerJSON('config/schemas.json', {});
   const contexto = {
-    schemas,
+    manifesto: lerManifesto(csvsDir),
     adsConfig: lerJSON('config/ads-filters.json', {}),
     bdsSelecao: lerJSON('config/bds-selecao.json', {}),
   };
@@ -229,14 +219,13 @@ async function gerarInventario({ csvsDir = CSVS_DIR, exportsDir = EXPORTS_DIR } 
   for (const caminho of arquivos) {
     const arquivo = path.basename(caminho);
     const mb = (fs.statSync(caminho).size / 1024 / 1024).toFixed(1);
-    const { tabela, tipo, schemaFixo } = destinoTabela(caminho, schemas);
     const origem = identificarOrigem(caminho, contexto);
     try {
       const analise = await analisarCSV(caminho);
-      infos.push({ arquivo, mb, tabela, tipo, schemaFixo, origem, ...analise });
+      infos.push({ arquivo, mb, origem, ...analise });
       console.log(`  ✅ ${arquivo.padEnd(40)} ${analise.registros.toLocaleString('pt-BR')} registros, ${analise.colunas.length} colunas`);
     } catch (e) {
-      infos.push({ arquivo, mb, tabela, tipo, schemaFixo, origem, erro: e.message, registros: 0, colunas: [], datas: [], ids: [] });
+      infos.push({ arquivo, mb, origem, erro: e.message, registros: 0, colunas: [], datas: [], ids: [] });
       console.log(`  ❌ ${arquivo}: ${e.message}`);
     }
   }
@@ -257,7 +246,6 @@ module.exports = {
   analisarCSV,
   gerarMarkdown,
   identificarOrigem,
-  destinoTabela,
   detectarFormatoData,
   ehColunaData,
   ehColunaId,

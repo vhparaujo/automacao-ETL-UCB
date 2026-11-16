@@ -18,13 +18,12 @@ test('slug mantém exatamente os nomes dos três ADS existentes', () => {
   }
 });
 
-test('os ADS existentes do config continuam gerando os CSVs esperados por schemas.json', () => {
+test('os ADS existentes do config continuam gerando os mesmos nomes de CSV', () => {
   const raiz = path.join(__dirname, '..');
   const config = JSON.parse(fs.readFileSync(path.join(raiz, 'config/ads-filters.json'), 'utf8'));
-  const schemas = JSON.parse(fs.readFileSync(path.join(raiz, 'config/schemas.json'), 'utf8'));
-  for (const nome of ['Notas finais', 'Uso do Aluno', 'Uso do instrutor']) {
-    const arquivo = nomeArquivoADS(nome, config[nome]);
-    assert.ok(schemas[path.basename(arquivo, '.csv')], `schema "${arquivo}" não existe`);
+  const esperados = { 'Notas finais': 'notas_finais.csv', 'Uso do Aluno': 'uso_do_aluno.csv', 'Uso do instrutor': 'uso_do_instrutor.csv' };
+  for (const [nome, arquivo] of Object.entries(esperados)) {
+    assert.equal(nomeArquivoADS(nome, config[nome]), arquivo);
   }
 });
 

@@ -17,7 +17,7 @@ const limparTela = () => process.stdout.write('\x1Bc');
 
 function cabecalho() {
   console.log('╔══════════════════════════════════════════╗');
-  console.log('║   Brightspace ETL — UCB  v1.0            ║');
+  console.log('║   Brightspace Downloads — UCB  v1.0      ║');
   console.log('╚══════════════════════════════════════════╝\n');
 }
 
@@ -27,10 +27,9 @@ async function menuPrincipal() {
   console.log('  [1] Configurar autenticação OAuth');
   console.log('  [2] Gerenciar datasets automáticos (BDS/ADS)');
   console.log('  [3] Configurar agendamento');
-  console.log('  [4] Gerenciar transformações SQL');
-  console.log('  [5] Rodar pipeline agora');
-  console.log('  [6] Download sob demanda');
-  console.log('  [7] Ver último log');
+  console.log('  [4] Rodar downloads automáticos agora');
+  console.log('  [5] Download sob demanda');
+  console.log('  [6] Ver último log');
   console.log('  [0] Sair\n');
   return perguntar('  Opção: ');
 }
@@ -288,66 +287,28 @@ async function configurarAgendamento() {
 }
 
 // ──────────────────────────────────────────────────────
-// [4] Transformações
-// ──────────────────────────────────────────────────────
-async function gerenciarTransformacoes() {
-  limparTela();
-  console.log('🔧 Gerenciar transformações SQL\n');
-  const config = JSON.parse(fs.readFileSync('config/transforms.json', 'utf8'));
-  const lista = config.transformacoes || [];
-
-  if (lista.length === 0) {
-    console.log('Nenhuma transformação configurada.');
-    console.log('Crie .sql em src/transforms/queries/ e adicione em config/transforms.json.\n');
-    await perguntar('Pressione Enter para voltar...');
-    return;
-  }
-
-  lista.forEach((t, i) => {
-    const status = t.ativo === false ? '⏸️ ' : '✅';
-    console.log(`  [${i + 1}] ${status} ${t.nome} (${t.tipo})`);
-  });
-
-  console.log('\n  [T] Ativar/desativar | [V] Voltar\n');
-  const op = (await perguntar('  Opção: ')).trim().toUpperCase();
-
-  if (op === 'T') {
-    const idx = parseInt(await perguntar('Número: '), 10) - 1;
-    if (idx >= 0 && idx < lista.length) {
-      lista[idx].ativo = lista[idx].ativo === false;
-      fs.writeFileSync('config/transforms.json', JSON.stringify(config, null, 2));
-      console.log(`✅ "${lista[idx].nome}" ${lista[idx].ativo ? 'ativado' : 'desativado'}.`);
-    }
-  }
-
-  await perguntar('\nPressione Enter para voltar...');
-}
-
-// ──────────────────────────────────────────────────────
-// [5] Rodar pipeline
+// [4] Rodar downloads automáticos
 // ──────────────────────────────────────────────────────
 async function rodarPipeline() {
   limparTela();
-  console.log('🚀 Rodar pipeline\n');
-  console.log('  [1] Pipeline completo (apenas automáticos)');
-  console.log('  [2] Apenas BDS automáticos');
-  console.log('  [3] Apenas ADS automáticos');
-  console.log('  [4] Apenas carga MySQL');
-  console.log('  [5] Apenas transformações SQL');
-  console.log('  [6] Pipeline completo com BDS DIFERENCIAL (só o do dia)');
-  console.log('  [7] Apenas BDS diferencial');
+  console.log('🚀 Rodar downloads automáticos agora\n');
+  console.log('  [1] BDS completo + ADS (apenas automáticos)');
+  console.log('  [2] Apenas BDS completo');
+  console.log('  [3] Apenas ADS');
+  console.log('  [4] BDS DIFERENCIAL (só o do dia) + ADS');
+  console.log('  [5] Apenas BDS diferencial');
   console.log('  [V] Voltar\n');
 
   const op = (await perguntar('  Opção: ')).trim();
   const flags = {
-    '1': [], '2': ['--apenas-bds'], '3': ['--apenas-ads'], '4': ['--apenas-load'], '5': ['--apenas-transform'],
-    '6': ['--diferencial'], '7': ['--apenas-bds', '--diferencial'],
+    '1': [], '2': ['--apenas-bds'], '3': ['--apenas-ads'],
+    '4': ['--diferencial'], '5': ['--apenas-bds', '--diferencial'],
   };
   if (!flags[op]) return;
 
-  // Pipeline completo ou só ADS: permite trocar a data de início de todos os ADS nesta execução
+  // Execuções com ADS: permite trocar a data de início de todos os ADS nesta execução
   const args = [...flags[op]];
-  if (op === '1' || op === '3' || op === '6') {
+  if (op === '1' || op === '3' || op === '4') {
     const inicio = (await perguntar('  Data de início dos ADS (ex.: 2026-08-01, -30d, inicio_semestre — Enter = usar o config): ')).trim();
     if (inicio) args.push('--inicio', inicio);
   }
@@ -359,7 +320,7 @@ async function rodarPipeline() {
 }
 
 // ──────────────────────────────────────────────────────
-// [6] Download sob demanda
+// [5] Download sob demanda
 // ──────────────────────────────────────────────────────
 async function downloadSobDemanda() {
   limparTela();
@@ -502,7 +463,7 @@ async function demandaADSEspecifico() {
 }
 
 // ──────────────────────────────────────────────────────
-// [7] Ver log
+// [6] Ver log
 // ──────────────────────────────────────────────────────
 async function verUltimoLog() {
   limparTela();
@@ -546,10 +507,9 @@ async function main() {
       case '1': await configurarAuth(); break;
       case '2': await gerenciarAutomaticos(); break;
       case '3': await configurarAgendamento(); break;
-      case '4': await gerenciarTransformacoes(); break;
-      case '5': await rodarPipeline(); break;
-      case '6': await downloadSobDemanda(); break;
-      case '7': await verUltimoLog(); break;
+      case '4': await rodarPipeline(); break;
+      case '5': await downloadSobDemanda(); break;
+      case '6': await verUltimoLog(); break;
       case '0':
         console.log('\nAté logo!\n');
         rl.close();

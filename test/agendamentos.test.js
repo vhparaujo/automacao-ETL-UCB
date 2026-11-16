@@ -41,5 +41,5 @@ test('valida bds e cron; padrões de ativo/ads', () => {
 test('descreverEtapas', () => {
   assert.equal(descreverEtapas({ bds: 'diferencial', ads: true }), 'BDS diferencial + ADS');
   assert.equal(descreverEtapas({ bds: false, ads: true }), 'ADS');
-  assert.equal(descreverEtapas({ bds: false, ads: false }), 'sem download (só carga/transformações)');
+  assert.equal(descreverEtapas({ bds: false, ads: false }), 'nada a baixar');
 });
