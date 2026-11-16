@@ -47,6 +47,66 @@ npm run test-auth
 
 ---
 
+## Servidor Linux — agendamento contínuo com pm2
+
+Quem dispara os downloads nos horários de `config/schedule.json` é o próprio `npm start`
+(`node src/pipeline.js --watch`, com node-cron). **Se esse processo não estiver rodando, nada dispara.**
+No servidor ele é mantido pelo [pm2](https://pm2.keymetrics.io/): roda sem terminal aberto, reinicia se
+cair e volta sozinho após reboot. O fuso vem de `fuso_horario` do `schedule.json` — o fuso do servidor
+não importa.
+
+### Instalação (uma vez, dentro da pasta do projeto)
+
+```bash
+npm install                     # dependências do projeto
+cp .env.example .env            # e preencha as credenciais
+# autenticação: ver "Setup no servidor (sem navegador)" abaixo
+npm run test-auth               # confirma que os tokens funcionam
+
+sudo npm install -g pm2
+pm2 start src/pipeline.js --name etl-ucb -- --watch
+pm2 save                        # grava a lista de processos
+pm2 startup                     # imprime um comando "sudo env PATH=... pm2 startup systemd ..." — execute-o
+```
+
+> ⚠️ O `--watch` vai **depois do `--`** (é argumento do pipeline). `pm2 start src/pipeline.js --watch`
+> (sem `--`) liga o *file watch* do pm2, que reinicia o processo a cada arquivo gravado em `csvs/` e
+> `logs/` — os downloads são mortos no meio. Confira com `pm2 describe etl-ucb` → `watch & reload: ✘`.
+
+Rode o `pm2 start` **na pasta do projeto**: é ela que define onde ficam `.env`, `.tokens.json`,
+`config/`, `csvs/` e `logs/`. Use o mesmo usuário Linux do `npm run setup` (dono do `.tokens.json`).
+
+### Setup no servidor (sem navegador)
+
+O `npm run setup` imprime a URL de autorização e espera o retorno em `https://localhost:9876/callback`
+**na própria máquina**. Em servidor sem interface gráfica, use um túnel SSH a partir do seu computador:
+
+```bash
+ssh -L 9876:localhost:9876 usuario@servidor   # mantenha esta sessão aberta
+cd /caminho/do/projeto && npm run setup       # no servidor, dentro do túnel
+```
+
+Abra no **seu** navegador a URL impressa, faça login e aceite o aviso de certificado — o retorno passa
+pelo túnel e os tokens são salvos no servidor. Alternativa: rodar o setup no seu computador e copiar o
+`.tokens.json` para a pasta do projeto no servidor (`chmod 600 .tokens.json`).
+
+### Dia a dia
+
+```bash
+pm2 status               # rodando? quantos restarts?
+pm2 logs etl-ucb         # saída em tempo real (Ctrl+C sai; o processo continua)
+pm2 restart etl-ucb      # OBRIGATÓRIO após alterar config/schedule.json (lido só ao iniciar)
+pm2 stop etl-ucb         # pausa os agendamentos
+pm2 delete etl-ucb && pm2 save   # remove de vez
+```
+
+- Atualizou o código (`git pull` / `npm install`)? → `pm2 restart etl-ucb`.
+- O log detalhado de cada execução continua em `logs/pipeline-YYYY-MM-DD.log`.
+- Refresh token expirado: o pipeline grava `logs/ULTIMA_FALHA_AUTH.txt` e não baixa nada — refaça o
+  setup (acima); não é preciso reiniciar o pm2.
+
+---
+
 ## CLI Interativa
 
 A forma mais fácil de usar o sistema. Inicia um menu interativo no terminal:

@@ -354,6 +354,9 @@ strings como "Professor" com erro 400.
 - `iniciarAgendamento()` agenda cada item ativo (cron validado com `cron.validate`) e roda as execuções
   em **fila** (uma por vez). Cada execução é `completo: true` (arquiva csvs/, inventário no fim);
   `pipeline.baixar_bds/baixar_ads` continuam valendo como chave geral.
+- **Produção (servidor Linux):** o `--watch` roda sob **pm2** (`pm2 start src/pipeline.js --name etl-ucb -- --watch`
+  + `pm2 save` + `pm2 startup`), a partir da pasta do projeto. O schedule.json é lido só ao iniciar →
+  `pm2 restart etl-ucb` após mudar. Setup OAuth no servidor: túnel `ssh -L 9876:localhost:9876` (ver README).
 - Horários escolhidos depois da geração no Brightspace (completo ~8h20 de segunda, diferencial ~5h20).
 - CLI [3]: lista os agendamentos, [A] ativa/desativa, [C] troca o cron, [P] restaura `AGENDAMENTOS_PADRAO`.
 
