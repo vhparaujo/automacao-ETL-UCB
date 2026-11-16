@@ -75,7 +75,7 @@ function descreverEtapas(ag) {
   const partes = [];
   if (ag.bds) partes.push(`BDS ${ag.bds}`);
   if (ag.ads) partes.push('ADS');
-  return partes.length ? partes.join(' + ') : 'nada a baixar';
+  return partes.length ? partes.join(' + ') : 'sem download (só carga no MySQL)';
 }
 
 module.exports = { lerAgendamentos, descreverEtapas, AGENDAMENTOS_PADRAO, TIPOS_BDS, FUSO_PADRAO };

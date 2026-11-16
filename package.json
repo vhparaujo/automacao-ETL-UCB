@@ -1,7 +1,7 @@
 {
   "name": "brightspace-etl-ucb",
   "version": "1.0.0",
-  "description": "Automação do download dos dados do Brightspace (D2L) — BDS e ADS — UCB",
+  "description": "Automação do download dos dados do Brightspace (D2L) — BDS e ADS — e carga no MySQL — UCB",
   "main": "src/pipeline.js",
   "scripts": {
     "setup": "node src/auth/oauth.js --setup",
@@ -10,6 +10,7 @@
     "bds": "node src/pipeline.js --apenas-bds",
     "bds:diferencial": "node src/pipeline.js --apenas-bds --diferencial",
     "ads": "node src/pipeline.js --apenas-ads",
+    "load": "node src/pipeline.js --apenas-load",
     "cli": "node src/cli.js",
     "roles": "node src/utils/listar-roles.js",
     "test-auth": "node src/auth/oauth.js --test",
@@ -21,6 +22,7 @@
   "dependencies": {
     "brightspace-auth": "github:vhparaujo/Authorization-Service-UCB",
     "dotenv": "^16.4.5",
+    "mysql2": "^3.11.0",
     "node-cron": "^3.0.3"
   },
   "engines": {

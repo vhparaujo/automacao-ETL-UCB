@@ -1,8 +1,8 @@
 'use strict';
 
-// Orquestra os downloads: autenticação → arquiva csvs/ → BDS (completo ou diferencial) → ADS →
+// Orquestra: autenticação → arquiva csvs/ → BDS (completo ou diferencial) → ADS → carga no MySQL →
 // inventário → resumo no console e em logs/pipeline-YYYY-MM-DD.log. Com --watch, agenda pelo
-// config/schedule.json (node-cron). Os CSVs ficam em csvs/ para quem for consumi-los.
+// config/schedule.json (node-cron).
 
 require('dotenv').config();
 const fs = require('node:fs');
@@ -12,6 +12,7 @@ const cron = require('node-cron');
 const { getAccessToken } = require('./auth/oauth');
 const { download: downloadBDS } = require('./extractors/bds');
 const { download: downloadADS } = require('./extractors/ads');
+const { load, listarTabelas } = require('./loader/mysql-loader');
 const {
   ARQUIVO_ALERTA,
   MENSAGEM_REAUTENTICAR,
@@ -21,7 +22,7 @@ const {
 } = require('./utils/falha-auth');
 const { gerarInventario } = require('./utils/inventario');
 const { lerArgsPeriodo } = require('./utils/datas');
-const { arquivarCsvsAnteriores, PASTA_ANTERIOR } = require('./utils/pasta-csvs');
+const { arquivarCsvsAnteriores, tabelasNaoAtualizadas, PASTA_ANTERIOR } = require('./utils/pasta-csvs');
 const { lerAgendamentos, descreverEtapas } = require('./utils/agendamentos');
 
 const LOGS_DIR = process.env.LOGS_DIR || './logs';
@@ -60,6 +61,7 @@ async function executarPipeline(opcoes = {}) {
   const flags = {
     bds: opcoes.bds ?? pipe.baixar_bds ?? true,
     ads: opcoes.ads ?? pipe.baixar_ads ?? true,
+    load: opcoes.load ?? pipe.carregar_mysql ?? true,
   };
   // BDS completo (padrão) ou diferencial (--diferencial / agendamento com "bds": "diferencial")
   const tipoBDS = opcoes.bdsTipo || 'completo';
@@ -69,7 +71,7 @@ async function executarPipeline(opcoes = {}) {
   log('INFO', `Pipeline iniciado. Log: ${logFile}`);
   if (opcoes.agendamento) log('INFO', `Agendamento: ${opcoes.agendamento}`);
 
-  const resumo = { bds: null, ads: null, erros: 0, falhaAuth: false };
+  const resumo = { bds: null, ads: null, load: null, erros: 0, falhaAuth: false };
 
   try {
     // Validar autenticação
@@ -102,7 +104,7 @@ async function executarPipeline(opcoes = {}) {
     log('INFO', 'Autenticação OK');
     limparFalhaAuth(LOGS_DIR);
 
-    // Pipeline completo: a execução anterior vai para csvs/_anterior/ (csvs/ fica só com o que veio agora).
+    // Pipeline completo: a execução anterior vai para csvs/_anterior/ (csvs/ fica só com o que veio agora e não é recarregado).
     // Execuções parciais (--apenas-*) e downloads sob demanda pela CLI não mexem na pasta.
     if (opcoes.completo && (flags.bds || flags.ads)) {
       const movidos = arquivarCsvsAnteriores(CSVS_DIR);
@@ -131,6 +133,28 @@ async function executarPipeline(opcoes = {}) {
         log('ERRO', `DOWNLOAD FALHOU — ADS "${f.nome}" não baixado após ${f.tentativas} tentativa(s): ${f.mensagem}`);
       }
       resumo.erros += resumo.ads.erros;
+    }
+
+    // Carga MySQL (CSVs de csvs/ + diferenciais de csvs/diferencial/ como upsert)
+    if (flags.load) {
+      log('INFO', 'Iniciando carga MySQL');
+      resumo.load = await load();
+      log('INFO', `MySQL: ${resumo.load.carregados} tabelas, ${resumo.load.totalLinhas} linhas`);
+      const dif = resumo.load.diferencial;
+      if (dif && (dif.aplicados || dif.pulados || dif.erros)) {
+        log('INFO', `Diferencial: ${dif.aplicados} aplicado(s) em ${dif.tabelas.join(', ') || '—'}, ${dif.pulados} pulado(s), ${dif.erros} erro(s)`);
+      }
+      resumo.erros += resumo.load.erros;
+
+      // Tabelas do banco cujo CSV não veio nesta execução (dados possivelmente defasados)
+      try {
+        resumo.naoAtualizadas = tabelasNaoAtualizadas(await listarTabelas(), resumo.load.tabelas);
+        if (resumo.naoAtualizadas.length > 0) {
+          log('AVISO', `Tabelas NÃO atualizadas nesta execução (CSV não baixado): ${resumo.naoAtualizadas.join(', ')}`);
+        }
+      } catch (e) {
+        log('AVISO', `Não foi possível listar as tabelas do MySQL: ${e.message}`);
+      }
     }
 
     // Inventário dos CSVs desta execução (só no pipeline completo) → exports/_inventario_csvs.md
@@ -162,12 +186,19 @@ async function executarPipeline(opcoes = {}) {
     console.log(`   📦 BDS ${resumo.bds.tipo || 'completo'}: ${resumo.bds.baixados} datasets${difs}`);
   }
   if (resumo.ads) console.log(`   📊 ADS: ${resumo.ads.processados} relatórios`);
+  if (resumo.load) console.log(`   🗄️  MySQL: ${resumo.load.carregados} tabelas — ${(resumo.load.totalLinhas || 0).toLocaleString('pt-BR')} linhas`);
+  if (resumo.load?.diferencial?.aplicados) {
+    console.log(`   🔁 Diferencial: ${resumo.load.diferencial.aplicados} aplicado(s) → ${resumo.load.diferencial.tabelas.join(', ')}`);
+  }
   if (resumo.inventario) console.log(`   📒 Inventário: ${resumo.inventario.arquivo}`);
   // Downloads que falharam mesmo após a nova tentativa: resumo no console E no arquivo de log
   const naoBaixados = [
     ...(resumo.bds?.falhas || []).map((f) => `BDS "${f.nome}"`),
     ...(resumo.ads?.falhas || []).map((f) => `ADS "${f.nome}"`),
   ];
+  if (resumo.naoAtualizadas?.length > 0) {
+    console.log(`   ⚠️  ${resumo.naoAtualizadas.length} tabela(s) NÃO atualizada(s) nesta execução: ${resumo.naoAtualizadas.join(', ')}`);
+  }
   if (naoBaixados.length > 0) {
     console.log(`   ❌ ${naoBaixados.length} download(s) com falha após as tentativas: ${naoBaixados.join(', ')}`);
   }
@@ -185,7 +216,7 @@ async function executarPipeline(opcoes = {}) {
 
 // Agendamentos de config/schedule.json → "agendamentos" (ver src/utils/agendamentos.js).
 // As execuções entram numa fila: se uma ainda estiver rodando (ex.: ADS das 6h às 9h de segunda),
-// a próxima espera ela terminar em vez de rodar junto e disputar csvs/.
+// a próxima espera ela terminar em vez de rodar junto e disputar csvs/ e o MySQL.
 function iniciarAgendamento() {
   const config = JSON.parse(fs.readFileSync('config/schedule.json', 'utf8'));
   let lidos;
@@ -266,6 +297,7 @@ if (require.main === module) {
     const opcoes = {
       bds: !parcial || args.includes('--apenas-bds'),
       ads: !parcial || args.includes('--apenas-ads'),
+      load: !parcial || args.includes('--apenas-load'),
     };
 
     // Sem --apenas-* = pipeline completo (arquiva csvs/ antes de baixar e roda o inventário no fim)

@@ -27,7 +27,7 @@ async function menuPrincipal() {
   console.log('  [1] Configurar autenticação OAuth');
   console.log('  [2] Gerenciar datasets automáticos (BDS/ADS)');
   console.log('  [3] Configurar agendamento');
-  console.log('  [4] Rodar downloads automáticos agora');
+  console.log('  [4] Rodar downloads + carga MySQL agora');
   console.log('  [5] Download sob demanda');
   console.log('  [6] Ver último log');
   console.log('  [0] Sair\n');
@@ -287,22 +287,23 @@ async function configurarAgendamento() {
 }
 
 // ──────────────────────────────────────────────────────
-// [4] Rodar downloads automáticos
+// [4] Rodar downloads + carga MySQL
 // ──────────────────────────────────────────────────────
 async function rodarPipeline() {
   limparTela();
-  console.log('🚀 Rodar downloads automáticos agora\n');
-  console.log('  [1] BDS completo + ADS (apenas automáticos)');
+  console.log('🚀 Rodar downloads + carga MySQL agora\n');
+  console.log('  [1] BDS completo + ADS + carga MySQL (apenas automáticos)');
   console.log('  [2] Apenas BDS completo');
   console.log('  [3] Apenas ADS');
-  console.log('  [4] BDS DIFERENCIAL (só o do dia) + ADS');
+  console.log('  [4] BDS DIFERENCIAL (só o do dia) + ADS + carga MySQL');
   console.log('  [5] Apenas BDS diferencial');
+  console.log('  [6] Apenas carga MySQL (CSVs já baixados)');
   console.log('  [V] Voltar\n');
 
   const op = (await perguntar('  Opção: ')).trim();
   const flags = {
     '1': [], '2': ['--apenas-bds'], '3': ['--apenas-ads'],
-    '4': ['--diferencial'], '5': ['--apenas-bds', '--diferencial'],
+    '4': ['--diferencial'], '5': ['--apenas-bds', '--diferencial'], '6': ['--apenas-load'],
   };
   if (!flags[op]) return;
 

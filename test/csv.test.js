@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseLinhaCSV } = require('../src/utils/csv');
+const { parseLinhaCSV, nomesColunasUnicos } = require('../src/utils/csv');
 
 test('cabeçalho simples', () => {
   assert.deepEqual(parseLinhaCSV('UserId,UserName,IsActive'), ['UserId', 'UserName', 'IsActive']);
@@ -33,4 +33,65 @@ test('remove \\r final (linhas \\r\\n)', () => {
 
 test('campos vazios são preservados', () => {
   assert.deepEqual(parseLinhaCSV('A,,C,'), ['A', '', 'C', '']);
+});
+
+test('nomes sem colisão continuam iguais (apenas truncados)', () => {
+  const longo = 'x'.repeat(70);
+  const { nomes, colisoes } = nomesColunasUnicos(['A', 'B', longo]);
+  assert.deepEqual(nomes, ['A', 'B', 'x'.repeat(64)]);
+  assert.equal(colisoes.length, 0);
+});
+
+test('colisão após truncamento para 64 caracteres recebe sufixo _2, _3', () => {
+  const prefixo = 'P'.repeat(64);
+  const cols = [`${prefixo}_primeiro`, `${prefixo}_segundo`, `${prefixo}_terceiro`];
+  const { nomes, colisoes } = nomesColunasUnicos(cols);
+
+  assert.equal(nomes[0], prefixo);
+  assert.equal(nomes[1], 'P'.repeat(62) + '_2');
+  assert.equal(nomes[2], 'P'.repeat(62) + '_3');
+  assert.ok(nomes.every((n) => n.length <= 64));
+  assert.equal(new Set(nomes).size, 3);
+  assert.equal(colisoes.length, 2);
+  assert.equal(colisoes[0].original, cols[1]);
+});
+
+test('colisão é case-insensitive (como no MySQL) e sufixo não colide com coluna existente', () => {
+  const { nomes } = nomesColunasUnicos(['Nome', 'NOME', 'Nome_2']);
+  assert.deepEqual(nomes, ['Nome', 'NOME_2', 'Nome_2_2']);
+});
+
+// ── Terminador de linha (LOAD DATA) ────────────────────────────────
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { detectarTerminadorLinha, detectarTerminadorArquivo } = require('../src/utils/csv');
+
+test('detectarTerminadorLinha: \\r\\n, \\n e \\r', () => {
+  assert.equal(detectarTerminadorLinha('a,b\r\n1,2\r\n'), '\r\n');
+  assert.equal(detectarTerminadorLinha('﻿a,b\n1,2\n'), '\n');
+  assert.equal(detectarTerminadorLinha('a,b\r1,2\r'), '\r');
+  assert.equal(detectarTerminadorLinha('a,b\r'), '\r\n'); // \r no fim do trecho lido
+});
+
+test('detectarTerminadorLinha ignora quebras dentro de aspas no cabeçalho', () => {
+  assert.equal(detectarTerminadorLinha('"col\ncom quebra",b\r\n1,2'), '\r\n');
+  assert.equal(detectarTerminadorLinha('"a ""x""\r\n",b\n1,2'), '\n');
+});
+
+test('detectarTerminadorLinha sem quebra usa \\n (padrão anterior)', () => {
+  assert.equal(detectarTerminadorLinha('a,b,c'), '\n');
+  assert.equal(detectarTerminadorLinha(''), '\n');
+});
+
+test('detectarTerminadorArquivo lê só o início do arquivo', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'terminador-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'crlf.csv'), 'a,b\r\n' + '1,2\n'.repeat(10));
+    fs.writeFileSync(path.join(dir, 'lf.csv'), 'a,b\n1,2\n');
+    assert.equal(detectarTerminadorArquivo(path.join(dir, 'crlf.csv')), '\r\n');
+    assert.equal(detectarTerminadorArquivo(path.join(dir, 'lf.csv')), '\n');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

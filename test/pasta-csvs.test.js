@@ -13,7 +13,7 @@ process.env.CSVS_DIR = CSVS; // antes de carregar o pipeline
 process.env.LOGS_DIR = path.join(TMP, 'logs');
 process.env.EXPORTS_DIR = path.join(TMP, 'exports'); // o inventário do pipeline completo não pode tocar exports/ real
 
-const { listarCsvs, arquivarCsvsAnteriores } = require('../src/utils/pasta-csvs');
+const { listarCsvs, arquivarCsvsAnteriores, tabelasNaoAtualizadas } = require('../src/utils/pasta-csvs');
 
 // ── Mocks do pipeline ──────────────────────────────────────────────
 const chamadas = [];
@@ -26,6 +26,10 @@ mockarModulo('src/extractors/bds.js', {
   download: async () => { chamadas.push('bds'); fs.writeFileSync(path.join(CSVS, 'Users.csv'), 'a\n'); return { baixados: 1, erros: 0 }; },
 });
 mockarModulo('src/extractors/ads.js', { download: async () => ({ processados: 0, erros: 0 }) });
+mockarModulo('src/loader/mysql-loader.js', {
+  load: async () => ({ carregados: 1, erros: 0, totalLinhas: 1, tabelas: ['users'] }),
+  listarTabelas: async () => ['users', 'gradeobjects', 'Antiga_Sob_Demanda'],
+});
 const { executarPipeline } = require('../src/pipeline');
 
 function prepararPasta() {
@@ -64,15 +68,22 @@ test('arquivarCsvsAnteriores move tudo para _anterior/, substitui o antigo e man
   assert.ok(fs.existsSync(path.join(CSVS, 'zips', 'parcial.zip')));
 });
 
-test('pipeline completo arquiva csvs/ antes dos downloads', async () => {
-  await silencioso(() => executarPipeline({ bds: true, ads: true, completo: true }));
+test('tabelasNaoAtualizadas compara sem diferenciar maiúsculas', () => {
+  assert.deepEqual(tabelasNaoAtualizadas(['users', 'GradeObjects', 'x'], ['USERS', 'gradeobjects']), ['x']);
+  assert.deepEqual(tabelasNaoAtualizadas(['a'], undefined), ['a']);
+  assert.deepEqual(tabelasNaoAtualizadas(['_etl_bds_estado', '_dif_users', 'b'], []), ['b']); // internas do ETL
+});
+
+test('pipeline completo arquiva csvs/ antes dos downloads e reporta tabelas não atualizadas', async () => {
+  const resumo = await silencioso(() => executarPipeline({ bds: true, ads: true, load: true, completo: true }));
   assert.deepEqual(listarCsvs(CSVS).map((f) => path.basename(f)), ['Users.csv']); // só o baixado agora
   assert.ok(fs.existsSync(path.join(CSVS, '_anterior', 'antigo_sob_demanda.csv')));
   assert.ok(!fs.existsSync(path.join(CSVS, '_anterior', 'muito_antigo.csv')), '_anterior antigo deve ser substituído');
+  assert.deepEqual(resumo.naoAtualizadas, ['Antiga_Sob_Demanda', 'gradeobjects']);
 });
 
 test('execução parcial (--apenas-*) não mexe na pasta csvs/', async () => {
-  await silencioso(() => executarPipeline({ bds: true, ads: false }));
+  await silencioso(() => executarPipeline({ bds: true, ads: false, load: false }));
   assert.ok(fs.existsSync(path.join(CSVS, 'antigo_sob_demanda.csv')));
   assert.ok(fs.existsSync(path.join(CSVS, '_anterior', 'muito_antigo.csv')));
 });

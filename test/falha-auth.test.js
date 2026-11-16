@@ -29,11 +29,14 @@ function mockarModulo(relativo, exportsFalsos) {
 mockarModulo('src/auth/oauth.js', { getAccessToken: () => comportamentoToken() });
 mockarModulo('src/extractors/bds.js', { download: async () => { etapasChamadas.push('bds'); return { baixados: 0, erros: 0 }; } });
 mockarModulo('src/extractors/ads.js', { download: async () => { etapasChamadas.push('ads'); return { processados: 0, erros: 0 }; } });
-
+mockarModulo('src/loader/mysql-loader.js', {
+  load: async () => { etapasChamadas.push('load'); return { carregados: 0, erros: 0, totalLinhas: 0, tabelas: [] }; },
+  listarTabelas: async () => [],
+});
 const { executarPipeline } = require('../src/pipeline');
 
 const alerta = () => path.join(LOGS_TMP, ARQUIVO_ALERTA);
-const TODAS = { bds: true, ads: true };
+const TODAS = { bds: true, ads: true, load: true };
 
 // Silencia o console durante a execução do pipeline, guardando a saída
 async function capturar(fn) {
@@ -94,7 +97,7 @@ test('autenticação bem-sucedida remove o alerta e roda as etapas', async () =>
 
   assert.equal(resultado.falhaAuth, false);
   assert.equal(fs.existsSync(alerta()), false);
-  assert.deepEqual(etapasChamadas, ['bds', 'ads']);
+  assert.deepEqual(etapasChamadas, ['bds', 'ads', 'load']);
 });
 
 test('erro que não é de autenticação continua como falha crítica genérica, sem alerta', async () => {
