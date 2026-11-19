@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseLinhaCSV, nomesColunasUnicos } = require('../src/utils/csv');
+const { parseLinhaCSV, nomesColunasUnicos, criarParserCSV, detectarFormatoCSV } = require('../src/utils/csv');
 
 test('cabeçalho simples', () => {
   assert.deepEqual(parseLinhaCSV('UserId,UserName,IsActive'), ['UserId', 'UserName', 'IsActive']);
@@ -94,4 +94,31 @@ test('detectarTerminadorArquivo lê só o início do arquivo', () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── CSVs do sistema acadêmico (csvs/manuais/): ';' e latin1 ─────────
+
+test('parseLinhaCSV e criarParserCSV aceitam outro separador (;)', () => {
+  assert.deepEqual(parseLinhaCSV('RA;"RUA; 10";VALOR\r', ';'), ['RA', 'RUA; 10', 'VALOR']);
+  const out = [];
+  const p = criarParserCSV((r) => out.push(r), ';');
+  p.push('A;B\r\n1,5;"x;y"\r\n'); p.end();
+  assert.deepEqual(out, [['A', 'B'], ['1,5', 'x;y']]);
+});
+
+test('detectarFormatoCSV: separador pelo cabeçalho e codificação (UTF-8 válido ou latin1)', () => {
+  assert.deepEqual(detectarFormatoCSV(Buffer.from('UserId,UserName\r\n1,ana\r\n')), { separador: ',', codificacao: 'utf8' });
+  assert.deepEqual(detectarFormatoCSV(Buffer.from('\uFEFFNome,Descrição\n')), { separador: ',', codificacao: 'utf8' });
+  assert.deepEqual(detectarFormatoCSV(Buffer.from('NÍVEL;CRÉD. ALUNO\r\n1;2,5\r\n', 'latin1')), { separador: ';', codificacao: 'latin1' });
+  assert.deepEqual(detectarFormatoCSV(Buffer.from('NÍVEL;CRÉD. ALUNO\r\n', 'utf8')), { separador: ';', codificacao: 'utf8' });
+  // cabeçalho com ',' dentro de nome entre aspas mas separado por ';'
+  assert.equal(detectarFormatoCSV(Buffer.from('A;B;"C, D"\n')).separador, ';');
+  // caractere UTF-8 partido no fim do trecho lido não vira latin1
+  const parcial = Buffer.from('Nome,Descrição\nação', 'utf8');
+  assert.equal(detectarFormatoCSV(parcial.subarray(0, parcial.length - 1)).codificacao, 'utf8');
+  assert.deepEqual(detectarFormatoCSV(Buffer.alloc(0)), { separador: ',', codificacao: 'utf8' });
+});
+
+test('nomesColunasUnicos desambigua nomes que só diferem por acento', () => {
+  assert.deepEqual(nomesColunasUnicos(['ÁREA', 'AREA', 'Area']).nomes, ['ÁREA', 'AREA_2', 'Area_3']);
 });

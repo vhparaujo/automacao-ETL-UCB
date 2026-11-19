@@ -257,6 +257,21 @@ As etapas da execução completa também seguem `pipeline.baixar_bds` / `pipelin
 
 **`csvs/_anterior/`:** no pipeline completo (`npm run pipeline`, opção [1] e o agendamento), o conteúdo atual de `csvs/` é movido para `csvs/_anterior/` **antes** dos downloads — nada é apagado, mas só a última execução fica guardada (o `_anterior` antigo é substituído). Assim, `csvs/` fica só com o que foi baixado na execução — um CSV baixado sob demanda semanas atrás não é recarregado toda noite. O loader e o inventário ignoram `csvs/_anterior/` e `csvs/zips/`; os diferenciais em `csvs/diferencial/` são aplicados pelo loader como upsert. Execuções parciais (`--apenas-*`) e downloads sob demanda pela CLI **não** mexem na pasta. No fim, o resumo lista os downloads que falharam mesmo após a nova tentativa e as tabelas do MySQL que **não** foram atualizadas nesta execução (o CSV delas não foi baixado).
 
+**`csvs/manuais/` (CSVs que não vêm do AVA):** coloque o arquivo em `csvs/manuais/` (a pasta é criada na primeira execução completa; pode criá-la à mão). Ele **nunca** é arquivado e é recarregado (DROP/TRUNCATE + LOAD DATA) em toda carga — o agendamento e `npm run load`. Para carregar na hora: `npm run load`. A tabela recebe o nome do arquivo (ex.: `Metas_Cursos.csv` → `metas_cursos`), com todas as colunas TEXT; para tipos/índices, crie uma entrada em `config/schemas.json` com a chave = nome do arquivo sem `.csv`. Para atualizar os dados, substitua o arquivo; para parar de carregar, apague-o (a tabela continua no banco — apague-a no MySQL se quiser). Um manual com o mesmo nome de um CSV baixado é ignorado (com aviso), porque iria para a mesma tabela. Requisitos: cabeçalho na 1ª linha. Separador (`,` ou `;`) e codificação (UTF-8 ou ISO-8859-1/latin1, como os exports do sistema acadêmico) são detectados sozinhos — o log mostra `ℹ️ Formato detectado: separador ";", codificação latin1`. Datas `dd/mm/aaaa` e decimais com vírgula só são convertidos com `"formato": "br"` no schema (sem schema, tudo fica TEXT como veio).
+
+Schemas prontos (`config/schemas.json`, `"formato": "br"`) para os exports do sistema acadêmico — o nome do arquivo precisa ser exatamente este:
+
+| Arquivo em `csvs/manuais/` | Tabela |
+|---|---|
+| `DisciplinasPorAlunos.csv` | `disciplinas_por_alunos` |
+| `ProvaveisFormandos.csv` | `provaveis_formandos` |
+| `Financeiro.csv` | `financeiro` |
+| `BolsasCadastradas.csv` | `bolsas_cadastradas` |
+| `DadosPessoais.csv` | `dados_pessoais` |
+| `CuboAcademico.csv` | `cubo_academico` |
+
+Os tipos foram tirados dos arquivos de 19/11/2026. Se um export novo trouxer coluna a mais, ela aparece no log como `ℹ️ … fora do schema (não carregadas)`; coluna que sumiu, como `⚠️ … ficarão NULL` — ajuste o schema.
+
 ---
 
 ### [5] Download sob demanda
@@ -451,6 +466,7 @@ Gera `exports/_inventario_csvs.md` com, para cada CSV de `csvs/` (sem `_anterior
 csvs/              ← CSVs da execução atual (BDS completo + ADS; os únicos carregados) e _bds_extracts.json
 csvs/diferencial/  ← BDS diferencial do dia e _bds_extracts.json (aplicados como upsert)
 csvs/_anterior/    ← CSVs da execução anterior (substituído a cada execução completa)
+csvs/manuais/      ← CSVs colocados à mão (não vêm do AVA): nunca arquivados, recarregados em toda carga
 csvs/zips/         ← temporário dos downloads
 exports/           ← _inventario_csvs.md
 logs/       ← Logs de cada execução (pipeline-YYYY-MM-DD.log)

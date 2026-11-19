@@ -5,9 +5,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const mysql = require('mysql2/promise');
-const { parseLinhaCSV, nomesColunasUnicos, detectarTerminadorArquivo } = require('../utils/csv');
+const { parseLinhaCSV, nomesColunasUnicos, detectarTerminadorArquivo, detectarFormatoArquivo } = require('../utils/csv');
 const { encontrarSchema, mesmoNome, normalizarNome } = require('../utils/nomes');
-const { listarCsvs } = require('../utils/pasta-csvs');
+const { listarCsvs, listarCsvsManuais } = require('../utils/pasta-csvs');
 const {
   TABELA_ESTADO, listarDiferenciais, lerManifesto, encontrarChave, decidirAplicacao, montarSqlMerge, nomeStaging,
 } = require('../utils/bds-diferencial');
@@ -35,13 +35,14 @@ function criarConexao() {
   });
 }
 
-async function lerCabecalhoCSV(csvPath) {
+async function lerCabecalhoCSV(csvPath, formato = { separador: ',', codificacao: 'utf8' }) {
   return new Promise((resolve, reject) => {
-    const rl = readline.createInterface({ input: fs.createReadStream(csvPath), crlfDelay: Infinity });
+    const input = fs.createReadStream(csvPath, { encoding: formato.codificacao });
+    const rl = readline.createInterface({ input, crlfDelay: Infinity });
     rl.once('line', (linha) => {
       rl.close();
       // parseLinhaCSV remove BOM e \r final e respeita campos entre aspas (RFC 4180)
-      resolve(parseLinhaCSV(linha));
+      resolve(parseLinhaCSV(linha, formato.separador));
     });
     rl.on('error', reject);
   });
@@ -104,9 +105,19 @@ function ehBooleano(tipo) {
 
 // Expressão do SET do LOAD DATA para a variável posicional (@col_N) conforme o tipo da coluna.
 // Vazio → NULL; booleano TRUE/FALSE → 1/0 (0/1 numéricos passam direto).
-function expressaoValor(variavel, tipo) {
+// formatoBR (schema com "formato": "br" — CSVs do sistema acadêmico):
+//   DECIMAL/FLOAT/DOUBLE  "1234,5678"            → 1234.5678 (sem separador de milhar)
+//   DATETIME/TIMESTAMP    "dd/mm/aaaa hh:mm:ss"  (também aceita só "dd/mm/aaaa" → 00:00:00)
+//   DATE                  "dd/mm/aaaa"
+function expressaoValor(variavel, tipo, { formatoBR = false } = {}) {
   if (ehBooleano(tipo)) {
     return `CASE UPPER(TRIM(${variavel})) WHEN '' THEN NULL WHEN 'TRUE' THEN 1 WHEN 'FALSE' THEN 0 ELSE ${variavel} END`;
+  }
+  if (formatoBR) {
+    const t = String(tipo).trim().toUpperCase();
+    if (/^(DECIMAL|NUMERIC|FLOAT|DOUBLE|REAL)\b/.test(t)) return `REPLACE(NULLIF(TRIM(${variavel}), ''), ',', '.')`;
+    if (/^(DATETIME|TIMESTAMP)\b/.test(t)) return `STR_TO_DATE(NULLIF(TRIM(${variavel}), ''), '%d/%m/%Y %H:%i:%s')`;
+    if (/^DATE\b/.test(t)) return `STR_TO_DATE(NULLIF(TRIM(${variavel}), ''), '%d/%m/%Y')`;
   }
   return `NULLIF(${variavel}, '')`;
 }
@@ -218,8 +229,13 @@ async function planejarCarga(csvPath, schemas) {
   // Casamento normalizado (sem acento/case, ignora espaço, _ e -) + "aliases" do schemas.json
   const schemaEntry = encontrarSchema(base, schemas)?.schema;
   const tabela = nomeTabela(csvPath, schemaEntry);
-  const colunas = await lerCabecalhoCSV(csvPath);
+  // Separador (',' ou ';') e codificação (utf8 ou latin1) detectados pelo início do arquivo
+  const formato = detectarFormatoArquivo(csvPath);
+  const colunas = await lerCabecalhoCSV(csvPath, formato);
   const avisos = [];
+  if (formato.separador !== ',' || formato.codificacao !== 'utf8') {
+    avisos.push(`ℹ️  Formato detectado: separador "${formato.separador}", codificação ${formato.codificacao}`);
+  }
 
   if (!schemaEntry) {
     avisos.push(
@@ -259,7 +275,7 @@ async function planejarCarga(csvPath, schemas) {
     : colunasSemSchema.map((c, i) => ({ indice: i, nome: c.nome, tipo: c.tipo }));
 
   return {
-    base, schemaEntry, tabela, colunas, nomesInferidos, plano, colunasSemSchema, preenchidas, avisos,
+    base, schemaEntry, tabela, formato, formatoBR: schemaEntry?.formato === 'br', colunas, nomesInferidos, plano, colunasSemSchema, preenchidas, avisos,
     // Estrutura esperada da tabela (CREATE TABLE): schema na ordem do schema; sem schema = cabeçalho
     definicoes: plano ? plano.definicoes : colunasSemSchema,
   };
@@ -271,19 +287,22 @@ async function executarLoadData(conn, csvPath, tabela, planejamento) {
   // Variáveis posicionais evitam o limite de 64 chars do MySQL em nomes de identificadores
   const vars = planejamento.colunas.map((_, i) => `@col_${i}`).join(', ');
   const sets = planejamento.preenchidas
-    .map((m) => `\`${m.nome}\` = ${expressaoValor(`@col_${m.indice}`, m.tipo)}`)
+    .map((m) => `\`${m.nome}\` = ${expressaoValor(`@col_${m.indice}`, m.tipo, { formatoBR: planejamento.formatoBR })}`)
     .join(',\n  ');
 
   // Os CSVs do Brightspace usam \r\n. Com LINES TERMINATED BY '\n' o \r ficava grudado na
   // última coluna (e vazio virava "\r" em vez de NULL). Detecta o terminador real do arquivo.
   const terminador = detectarTerminadorArquivo(csvPath);
   const terminadorSQL = { '\r\n': '\\r\\n', '\n': '\\n', '\r': '\\r' }[terminador];
+  // latin1 do MySQL = Windows-1252 (superconjunto do ISO-8859-1 usado nos exports do sistema acadêmico)
+  const { separador = ',', codificacao = 'utf8' } = planejamento.formato || {};
+  const charsetMySQL = codificacao === 'latin1' ? 'latin1' : 'utf8mb4';
 
   const sql = `
     LOAD DATA LOCAL INFILE '${absPath}'
     INTO TABLE \`${tabela}\`
-    CHARACTER SET utf8mb4
-    FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+    CHARACTER SET ${charsetMySQL}
+    FIELDS TERMINATED BY '${separador}' OPTIONALLY ENCLOSED BY '"'
     LINES TERMINATED BY '${terminadorSQL}'
     IGNORE 1 ROWS
     (${vars})
@@ -521,10 +540,18 @@ async function load(csvGlob) {
     await conn.execute('SET SESSION sql_mode = ""');
     await garantirTabelaEstado(conn);
 
-    // Só os .csv do nível de cima de csvs/ — _anterior/, zips/ e diferencial/ são ignorados
-    const arquivos = csvGlob
-      ? (Array.isArray(csvGlob) ? csvGlob : [csvGlob])
-      : listarCsvs(CSVS_DIR);
+    // Só os .csv do nível de cima de csvs/ — _anterior/, zips/ e diferencial/ são ignorados —
+    // mais os colocados à mão em csvs/manuais/ (recarregados sempre)
+    let arquivos;
+    if (csvGlob) {
+      arquivos = Array.isArray(csvGlob) ? csvGlob : [csvGlob];
+    } else {
+      const manuais = listarCsvsManuais(CSVS_DIR);
+      for (const f of manuais.ignorados) {
+        console.log(`⚠️  csvs/manuais/${path.basename(f)} ignorado: já existe um CSV baixado com esse nome (mesma tabela) — renomeie o arquivo manual`);
+      }
+      arquivos = [...listarCsvs(CSVS_DIR), ...manuais.arquivos];
+    }
     const manifesto = lerManifesto(CSVS_DIR);
 
     let carregados = 0, erros = 0, totalLinhas = 0;

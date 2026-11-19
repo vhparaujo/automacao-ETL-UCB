@@ -15,10 +15,10 @@
 require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
-const { criarParserCSV } = require('./csv');
+const { criarParserCSV, detectarFormatoArquivo } = require('./csv');
 const { mesmoNome } = require('./nomes');
 const { nomeArquivoADS } = require('./ads-config');
-const { listarCsvs } = require('./pasta-csvs');
+const { listarCsvs, listarCsvsManuais, PASTA_MANUAIS } = require('./pasta-csvs');
 const { lerManifesto } = require('./bds-diferencial');
 
 const CSVS_DIR = process.env.CSVS_DIR || './csvs';
@@ -75,6 +75,7 @@ function lerJSON(caminho, padrao) {
 // Origem: ADS (nome gerado por nomeArquivoADS), BDS pelo manifesto do download (csvs/_bds_extracts.json
 // → dataset de cada CSV) ou, sem manifesto, pelo nome do arquivo comparado ao bds-selecao.json
 function identificarOrigem(arquivo, { adsConfig = {}, bdsSelecao = {}, manifesto = {} } = {}) {
+  if (path.basename(path.dirname(arquivo)) === PASTA_MANUAIS) return 'manual (csvs/manuais/)';
   const nomeArq = path.basename(arquivo).toLowerCase();
   for (const [nome, cfg] of Object.entries(adsConfig)) {
     if (nome.startsWith('_') || !cfg || typeof cfg !== 'object') continue;
@@ -97,6 +98,8 @@ function identificarOrigem(arquivo, { adsConfig = {}, bdsSelecao = {}, manifesto
 
 function analisarCSV(caminho, { linhasAmostra = LINHAS_AMOSTRA } = {}) {
   return new Promise((resolve, reject) => {
+    let formato;
+    try { formato = detectarFormatoArquivo(caminho); } catch (e) { reject(e); return; }
     let cabecalho = null;
     let registros = 0; // sem contar o cabeçalho
     let datas = [];
@@ -125,9 +128,9 @@ function analisarCSV(caminho, { linhasAmostra = LINHAS_AMOSTRA } = {}) {
         c.preenchidos++;
         if (!ehNumerico(v)) c.naoNumericos++;
       }
-    });
+    }, formato.separador);
 
-    const stream = fs.createReadStream(caminho, { encoding: 'utf8', highWaterMark: 1024 * 1024 });
+    const stream = fs.createReadStream(caminho, { encoding: formato.codificacao, highWaterMark: 1024 * 1024 });
     stream.on('data', (chunk) => parser.push(chunk));
     stream.on('error', reject);
     stream.on('end', () => {
@@ -212,7 +215,7 @@ async function gerarInventario({ csvsDir = CSVS_DIR, exportsDir = EXPORTS_DIR } 
     bdsSelecao: lerJSON('config/bds-selecao.json', {}),
   };
 
-  const arquivos = listarCsvs(csvsDir);
+  const arquivos = [...listarCsvs(csvsDir), ...listarCsvsManuais(csvsDir).arquivos];
   console.log(`\n📒 Inventário — analisando ${arquivos.length} CSV(s)...`);
 
   const infos = [];

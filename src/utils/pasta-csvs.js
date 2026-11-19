@@ -5,13 +5,15 @@
 //   csvs/_anterior/   → conteúdo da execução anterior (só a última; substituído a cada pipeline completo)
 //   csvs/zips/        → temporário dos downloads
 //   csvs/diferencial/ → BDS diferencial do dia + _bds_extracts.json (aplicados pelo loader como upsert; ver bds-diferencial.js)
+//   csvs/manuais/     → CSVs colocados à mão (não vêm do AVA): NUNCA arquivados, recarregados em toda carga
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 const PASTA_ANTERIOR = '_anterior';
 const PASTA_ZIPS = 'zips';
-const IGNORADAS = [PASTA_ANTERIOR, PASTA_ZIPS];
+const PASTA_MANUAIS = 'manuais';
+const IGNORADAS = [PASTA_ANTERIOR, PASTA_ZIPS, PASTA_MANUAIS];
 
 // Lista os .csv do nível de cima de csvsDir (subpastas como _anterior/ e zips/ ficam de fora)
 function listarCsvs(csvsDir) {
@@ -23,10 +25,21 @@ function listarCsvs(csvsDir) {
     .sort();
 }
 
+// CSVs colocados à mão em csvs/manuais/ (nível de cima). Um manual com o mesmo nome de um CSV de
+// csvs/ (BDS/ADS) é ignorado — iria para a mesma tabela. Retorna { arquivos, ignorados }.
+function listarCsvsManuais(csvsDir) {
+  const baixados = new Set(listarCsvs(csvsDir).map((f) => path.basename(f).toLowerCase()));
+  const arquivos = [], ignorados = [];
+  for (const f of listarCsvs(path.join(csvsDir, PASTA_MANUAIS))) {
+    (baixados.has(path.basename(f).toLowerCase()) ? ignorados : arquivos).push(f);
+  }
+  return { arquivos, ignorados };
+}
+
 // Move todo o conteúdo atual de csvsDir para csvsDir/_anterior/ (apagando o _anterior antigo).
-// zips/ fica onde está. Retorna a lista de nomes movidos.
+// zips/ e manuais/ ficam onde estão (manuais/ é criada se não existir). Retorna a lista de nomes movidos.
 function arquivarCsvsAnteriores(csvsDir) {
-  fs.mkdirSync(csvsDir, { recursive: true });
+  fs.mkdirSync(path.join(csvsDir, PASTA_MANUAIS), { recursive: true });
   const destino = path.join(csvsDir, PASTA_ANTERIOR);
   const itens = fs.readdirSync(csvsDir).filter((nome) => !IGNORADAS.includes(nome));
 
@@ -47,4 +60,4 @@ function tabelasNaoAtualizadas(existentes, carregadas) {
     .sort();
 }
 
-module.exports = { PASTA_ANTERIOR, listarCsvs, arquivarCsvsAnteriores, tabelasNaoAtualizadas };
+module.exports = { PASTA_ANTERIOR, PASTA_MANUAIS, listarCsvs, listarCsvsManuais, arquivarCsvsAnteriores, tabelasNaoAtualizadas };

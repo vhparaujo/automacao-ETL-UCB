@@ -13,7 +13,7 @@ process.env.CSVS_DIR = CSVS; // antes de carregar o pipeline
 process.env.LOGS_DIR = path.join(TMP, 'logs');
 process.env.EXPORTS_DIR = path.join(TMP, 'exports'); // o inventário do pipeline completo não pode tocar exports/ real
 
-const { listarCsvs, arquivarCsvsAnteriores, tabelasNaoAtualizadas } = require('../src/utils/pasta-csvs');
+const { listarCsvs, listarCsvsManuais, arquivarCsvsAnteriores, tabelasNaoAtualizadas } = require('../src/utils/pasta-csvs');
 
 // ── Mocks do pipeline ──────────────────────────────────────────────
 const chamadas = [];
@@ -41,6 +41,9 @@ function prepararPasta() {
   fs.writeFileSync(path.join(CSVS, 'antigo_sob_demanda.csv'), 'x\n');
   fs.writeFileSync(path.join(CSVS, 'GradeObjects.csv'), 'x\n');
   fs.writeFileSync(path.join(CSVS, 'notas.txt'), 'x');
+  fs.mkdirSync(path.join(CSVS, 'manuais'), { recursive: true });
+  fs.writeFileSync(path.join(CSVS, 'manuais', 'Planilha_Externa.csv'), 'x\n');
+  fs.writeFileSync(path.join(CSVS, 'manuais', 'gradeobjects.csv'), 'x\n'); // mesmo nome de um baixado
 }
 
 async function silencioso(fn) {
@@ -66,6 +69,20 @@ test('arquivarCsvsAnteriores move tudo para _anterior/, substitui o antigo e man
   assert.deepEqual(listarCsvs(CSVS), []);
   assert.deepEqual(fs.readdirSync(path.join(CSVS, '_anterior')).sort(), ['GradeObjects.csv', 'antigo_sob_demanda.csv', 'notas.txt']);
   assert.ok(fs.existsSync(path.join(CSVS, 'zips', 'parcial.zip')));
+});
+
+test('listarCsvsManuais lista csvs/manuais/ e ignora nomes iguais aos de csvs/', () => {
+  const { arquivos, ignorados } = listarCsvsManuais(CSVS);
+  assert.deepEqual(arquivos.map((f) => path.basename(f)), ['Planilha_Externa.csv']);
+  assert.deepEqual(ignorados.map((f) => path.basename(f)), ['gradeobjects.csv']);
+  assert.deepEqual(listarCsvsManuais(path.join(TMP, 'nao-existe')), { arquivos: [], ignorados: [] });
+});
+
+test('arquivarCsvsAnteriores não mexe em csvs/manuais/', () => {
+  const movidos = arquivarCsvsAnteriores(CSVS);
+  assert.ok(!movidos.includes('manuais'));
+  assert.ok(fs.existsSync(path.join(CSVS, 'manuais', 'Planilha_Externa.csv')));
+  assert.ok(!fs.existsSync(path.join(CSVS, '_anterior', 'manuais')));
 });
 
 test('tabelasNaoAtualizadas compara sem diferenciar maiúsculas', () => {

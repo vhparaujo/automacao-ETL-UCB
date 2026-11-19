@@ -47,6 +47,24 @@ test('expressaoValor: booleano converte TRUE/FALSE (qualquer caixa); demais só 
   assert.equal(expressaoValor('@col_0', 'TEXT'), "NULLIF(@col_0, '')");
 });
 
+test('expressaoValor: formatoBR converte decimal com vírgula e datas dd/mm/aaaa; sem formatoBR nada muda', () => {
+  const br = { formatoBR: true };
+  assert.equal(expressaoValor('@col_1', 'DECIMAL(12,4)', br), "REPLACE(NULLIF(TRIM(@col_1), ''), ',', '.')");
+  assert.equal(expressaoValor('@col_2', 'DATETIME', br), "STR_TO_DATE(NULLIF(TRIM(@col_2), ''), '%d/%m/%Y %H:%i:%s')");
+  assert.equal(expressaoValor('@col_3', 'DATE', br), "STR_TO_DATE(NULLIF(TRIM(@col_3), ''), '%d/%m/%Y')");
+  assert.equal(expressaoValor('@col_4', 'VARCHAR(50)', br), "NULLIF(@col_4, '')");
+  assert.equal(expressaoValor('@col_5', 'INT', br), "NULLIF(@col_5, '')");
+  assert.equal(expressaoValor('@col_2', 'DATETIME'), "NULLIF(@col_2, '')"); // CSVs do Brightspace (ISO)
+  assert.equal(expressaoValor('@col_1', 'DECIMAL(12,4)'), "NULLIF(@col_1, '')");
+});
+
+test('planejarColunasSchema: renomeia coluna que só difere por acento (o MySQL as considera iguais)', () => {
+  const p = planejarColunasSchema(['RESPONSÁVEL FINANCEIRO', 'RESPONSAVEL FINANCEIRO'],
+    { 'RESPONSÁVEL FINANCEIRO': 'VARCHAR(150)', 'RESPONSAVEL FINANCEIRO': 'VARCHAR(150)' });
+  assert.deepEqual(p.definicoes.map((d) => d.nome), ['RESPONSÁVEL FINANCEIRO', 'RESPONSAVEL FINANCEIRO_2']);
+  assert.deepEqual(p.mapeamento.map((m) => m.indice), [0, 1]);
+});
+
 test('planejarColunasSchema: casa por nome (exato ou normalizado), segue a ordem do schema e aponta divergências', () => {
   const cabecalho = ['UserId', 'IsActive', 'CreationDate', 'Id do usuario', 'Extra'];
   const schema = { 'ID do Usuário': 'INT', UserId: 'INT', IsActive: 'TINYINT(1)', LastAccessed: 'DATETIME' };

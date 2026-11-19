@@ -73,6 +73,7 @@ automacao-ETL-UCB/
 ├── test/                        ← testes unitários (node:test) — npm test
 │
 ├── csvs/                        ← CSVs baixados (gerado em runtime, ignorar no git)
+│   └── manuais/                 ← CSVs colocados à mão (fora do AVA): nunca arquivados, carregados em toda carga
 ├── exports/                     ← _inventario_csvs.md (gerado em runtime)
 └── logs/                        ← logs de execução (gerado em runtime)
 ```
@@ -346,8 +347,11 @@ strings como "Professor" com erro 400.
 
 ```javascript
 // Para cada CSV em csvs/:
-// 1. Lê o cabeçalho com parseLinhaCSV() (src/utils/csv.js) — RFC 4180: vírgulas entre aspas,
-//    "" como aspa literal, remove BOM e \r final.
+// 1. detectarFormatoArquivo() (src/utils/csv.js) olha o 1º MB: separador (',' ou ';' — o que mais aparece
+//    no cabeçalho) e codificação (UTF-8 válido → utf8; senão latin1). BDS/ADS = ',' + utf8 (nada muda);
+//    exports do sistema acadêmico (csvs/manuais/) = ';' + latin1 → LOAD DATA com CHARACTER SET latin1 e
+//    FIELDS TERMINATED BY ';'. Lê o cabeçalho com parseLinhaCSV(linha, separador) — RFC 4180: separador
+//    entre aspas, "" como aspa literal, remove BOM e \r final.
 // 2. Procura schema fixo em config/schemas.json com encontrarSchema() (src/utils/nomes.js):
 //    chave exata → chave normalizada → "aliases" normalizados.
 //    a. Com schema: DROP + CREATE TABLE com as colunas/tipos do schema (colunas extras do CSV
@@ -356,7 +360,9 @@ strings como "Professor" com erro 400.
 //       "🔍 Sem schema fixo para … carregada com todas as colunas TEXT"; trunca nomes para
 //       64 chars e desambigua colisões com _2, _3…; se a tabela existe com outra estrutura,
 //       DROP + CREATE; com a mesma estrutura, só TRUNCATE.
-//    Só lê os .csv do nível de cima de csvs/ (ignora csvs/_anterior/ e csvs/zips/).
+//    Só lê os .csv do nível de cima de csvs/ (ignora csvs/_anterior/ e csvs/zips/) + os de csvs/manuais/
+//    (listarCsvsManuais(): CSVs postos à mão, não arquivados por arquivarCsvsAnteriores(); nome igual a um
+//    CSV baixado → ignorado com aviso). Tabela = nome do arquivo; tipos via schemas.json como qualquer outro.
 // 3. LOAD DATA LOCAL INFILE com variáveis posicionais (@col_0, @col_1, …) e
 //    SET coluna = NULLIF(@col_N, '') — booleanos: CASE TRUE/FALSE → 1/0 (expressaoValor()).
 // 4. Log: tabela, linhas, tempo (📋 = schema fixo, 🔍 = inferido).
@@ -392,6 +398,12 @@ strings como "Professor" com erro 400.
 - Booleanos (`TINYINT(1)`/`BOOL`): `expressaoValor()` converte `TRUE`/`FALSE` (qualquer caixa) → 1/0 —
   o MySQL (sql_mode='') gravava 0 para o texto. Vale também para tipos inferidos (INFERIR_TIPOS=true).
 - `Version` do Brightspace é `BIGINT` (passa de 2.147.483.647).
+- `"formato": "br"` (entrada do schema; usado nos 6 CSVs manuais do sistema acadêmico — DisciplinasPorAlunos,
+  ProvaveisFormandos, Financeiro, BolsasCadastradas, DadosPessoais, CuboAcademico): `expressaoValor(…, { formatoBR })`
+  converte DECIMAL `"1234,5678"` (REPLACE vírgula → ponto; sem separador de milhar) e DATE/DATETIME
+  `"dd/mm/aaaa[ hh:mm:ss]"` (STR_TO_DATE). Sem a flag, nada muda (BDS/ADS em ISO). Texto SIM/NÃO fica VARCHAR.
+- O MySQL compara nomes de coluna sem caixa NEM acento: `nomesColunasUnicos()` desambigua
+  "RESPONSÁVEL FINANCEIRO" × "RESPONSAVEL FINANCEIRO" com `_2` (no schema: `"coluna": "RESPONSAVEL FINANCEIRO_2"`).
 
 ### BDS diferencial — `aplicarDiferenciais()` (depois dos CSVs do nível de cima)
 
