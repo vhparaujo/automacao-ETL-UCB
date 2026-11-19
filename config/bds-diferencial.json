@@ -6,6 +6,8 @@
   "chaves": {
     "Users": ["UserId"],
     "OrganizationalUnits": ["OrgUnitId"],
+    "OrganizationalUnitAncestors": ["OrgUnitId", "AncestorOrgUnitId"],
+    "OrganizationalUnitDescendants": ["OrgUnitId", "DescendantOrgUnitId"],
     "UserEnrollments": ["OrgUnitId", "UserId"],
     "CourseAccess": ["OrgUnitId", "UserId", "DayAccessed"],
     "CourseAccessLog": ["OrgUnitId", "UserId", "Timestamp", "Source"],

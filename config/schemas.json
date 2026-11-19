@@ -43,6 +43,30 @@
     }
   },
 
+  "OrganizationalUnitAncestors": {
+    "tabela": "organizationalunitancestors",
+    "aliases": ["Ancestrais da unidade organizacional"],
+    "indices": [["OrgUnitId", "AncestorOrgUnitId"], ["AncestorOrgUnitId"]],
+    "colunas": {
+      "OrgUnitId":          "INT",
+      "AncestorOrgUnitId":  "INT",
+      "LastModified":       "DATETIME",
+      "DateDeleted":        "DATETIME"
+    }
+  },
+
+  "OrganizationalUnitDescendants": {
+    "tabela": "organizationalunitdescendants",
+    "aliases": ["Descendentes da unidade organizacional"],
+    "indices": [["OrgUnitId", "DescendantOrgUnitId"], ["DescendantOrgUnitId"]],
+    "colunas": {
+      "OrgUnitId":            "INT",
+      "DescendantOrgUnitId":  "INT",
+      "LastModified":         "DATETIME",
+      "DateDeleted":          "DATETIME"
+    }
+  },
+
   "GradeObjects": {
     "tabela": "gradeobjects",
     "aliases": ["Objetos de nota"],

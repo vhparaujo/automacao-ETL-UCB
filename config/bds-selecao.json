@@ -8,6 +8,8 @@
   "automaticos": [
     "Usuários",
     "Unidades organizacionais",
+    "Ancestrais da unidade organizacional",
+    "Descendentes da unidade organizacional",
     "Inscrições de usuário",
     "Acesso ao curso",
     "Log de acesso ao curso",
